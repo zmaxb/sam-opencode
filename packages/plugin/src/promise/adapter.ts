@@ -292,6 +292,7 @@ export function fromPromise(plugin: Plugin) {
               }),
             )
 
+        const nativeCompletion = host.experimental.generate.completion
         const context2: PromiseContext = {
           app: host.app,
           location: host.location,
@@ -348,6 +349,11 @@ export function fromPromise(plugin: Plugin) {
               text: adaptApiMethod(GenerateEndpoints["generate.text"], host.experimental.generate.text),
               image: adaptApiMethod(GenerateEndpoints["generate.image"], host.experimental.generate.image),
               decisions: adaptApiMethod(GenerateEndpoints["generate.decisions"], host.experimental.generate.decisions),
+              ...(nativeCompletion === undefined ? {} : { completion: {
+                contract: nativeCompletion.contract,
+                execute: (input, signal) =>
+                  Effect.runPromiseWith(runtime)(nativeCompletion.execute(input), { signal }),
+              } }),
             },
             artifact: {
               reload: () => run(host.experimental.artifact.reload()),

@@ -1,10 +1,13 @@
 export * as Generate from "./generate.js"
 
-import { ai, AIError, DecisionClient, ImageClient, LLMClient, Media } from "@opencode/ai/effect"
+import { ai, AIError, DecisionClient, ImageClient, LLMClient, Media, Message } from "@opencode/ai/effect"
 import type { DecisionRequest, DecisionResult, ImageRequest, ImageResult } from "@opencode/schema/generate"
 import { Money } from "@opencode/schema/money"
 import { SessionID } from "@opencode/schema/session-id"
 import { Context, Effect, Layer, Schema } from "effect"
+import { HttpClientRequest } from "effect/http"
+import type { Plugin } from "@opencode/plugin/effect"
+import { Provider } from "./provider.js"
 import { RequestExecutor } from "@opencode/ai/route"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { llmClient, requestExecutor } from "./effect/app-node-platform.js"
@@ -72,6 +75,7 @@ export type Error =
 
 export interface Interface {
   readonly text: (input: TextInput) => Effect.Effect<string, Error>
+  readonly completion?: (input: Plugin.CompletionInput) => Effect.Effect<Plugin.CompletionOutcome>
   readonly image: (input: ImageRequest) => Effect.Effect<ImageResult, Error>
   readonly decisions: (input: DecisionRequest) => Effect.Effect<DecisionResult, Error>
 }
@@ -125,6 +129,100 @@ export const layer = Layer.effect(
           Effect.mapError((error) => providerError(resolved.ref, error)),
         )
       return response.text
+    })
+
+    const completion = Effect.fn("Generate.completion")(function* (input: Plugin.CompletionInput) {
+      const failed = (failure: string) => ({ state: "failed", failure }) as const
+      const target = input.target
+      const reference = Model.Ref.make({
+        id: Model.ID.make(target.modelId),
+        providerID: Provider.ID.make(target.providerId),
+        variant: input.variant === undefined ? undefined : Model.VariantID.make(input.variant),
+      })
+      const lookedUp = yield* resolver.resolve(reference).pipe(Effect.option)
+      if (lookedUp._tag === "None" || !lookedUp.value) return failed("processor_model_unavailable")
+      const resolved = lookedUp.value
+      if (resolved.ref.providerID !== reference.providerID || resolved.ref.id !== reference.id ||
+          (input.variant !== undefined && resolved.ref.variant !== reference.variant))
+        return failed("processor_model_unavailable")
+      if (input.responseFormat && input.responseFormat.type !== "text" && !target.structuredOutput ||
+          input.reasoning !== undefined && !target.reasoning)
+        return failed("processor_parameter_unsupported")
+
+      // No Agent/session hooks, tools, or ModelRetry. The final HTTP URL and provider model
+      // are checked after the configured provider and its variant have lowered the request.
+      const request = ai.request({
+        model: resolved.model,
+        messages: input.messages.map(({role, content}) => {
+          switch (role) {
+            case "assistant": return Message.make({role, content})
+            case "user": return Message.make({role, content})
+            default: return Message.make({role: "system", content})
+          }
+        }),
+        maxTokens: input.maxTokens,
+        temperature: input.temperature,
+        topP: input.topP,
+      })
+      let sent = false
+      let admissionRejected = false
+      const response = yield* llm.generate(request, {
+        http: (req, send) => Effect.gen(function* () {
+          const wire = yield* HttpClientRequest.toWeb(req)
+          if (wire.url !== target.endpoint || wire.method !== "POST" || sent)
+            return yield* Effect.die("Stateless completion route changed")
+          const payload = yield* Effect.promise(() => wire.json())
+          if (!payload || typeof payload !== "object" || Array.isArray(payload))
+            return yield* Effect.die("Invalid stateless completion wire payload")
+          const body = payload as Record<string, unknown>
+          if (body.model !== resolved.model.id || body.tools !== undefined ||
+              !Array.isArray(body.messages))
+            return yield* Effect.die("Stateless completion request changed")
+          // Session generation lowers transcript system updates into user messages on some routes.
+          // This operation has an explicit, trusted array of Chat Completions message roles.
+          body.messages = input.messages
+          if (input.responseFormat !== undefined) body.response_format = input.responseFormat
+          if (input.reasoning !== undefined) body.reasoning_effort = input.reasoning
+          let output = req.pipe(HttpClientRequest.bodyText(JSON.stringify(body), "application/json"))
+          if (target.sharedAdmission) output = output.pipe(
+            HttpClientRequest.setHeader("x-sam-inference-role", "processor"),
+            HttpClientRequest.setHeader("x-sam-correlation-id", input.correlationId),
+          )
+          sent = true
+          const reply = yield* send(output)
+          admissionRejected = target.sharedAdmission && reply.headers["x-sam-inference-state"] === "not-dispatched"
+          return reply
+        }),
+      }).pipe(Effect.result)
+      if (response._tag === "Failure") {
+        if (!sent || admissionRejected) return failed("processor_dispatch_rejected")
+        // Post-dispatch transport failure cannot prove whether generation ran.
+        return yield* Effect.die(response.failure)
+      }
+      const value = response.success
+      if (value.toolCalls.length || value.finishReason.normalized === "tool-calls")
+        return failed("processor_tool_call_rejected")
+      if (value.finishReason.normalized === "error" || value.finishReason.normalized === "unknown")
+        return failed("processor_invalid_finish")
+      const usage = value.usage
+      return {
+        state: "succeeded",
+        result: {
+          provider: target.providerId,
+          model: target.modelId,
+          variant: input.variant,
+          text: value.text,
+          refusal: value.finishReason.normalized === "content-filter",
+          finishReason: value.finishReason.normalized,
+          ...(usage ? { usage: {
+            promptTokens: usage.inputTokens,
+            completionTokens: usage.outputTokens,
+            totalTokens: usage.totalTokens,
+            cachedPromptTokens: usage.cacheReadInputTokens,
+            reasoningCompletionTokens: usage.reasoningTokens,
+          } } : {}),
+        },
+      } satisfies Plugin.CompletionOutcome
     })
 
     // A ref no model of this type has: another type's model (422) or no model at all (404).
@@ -224,6 +322,7 @@ export const layer = Layer.effect(
 
     return Service.of({
       text: (input) => credentials(runText(input)),
+      completion,
       image: (input) => credentials(image(input)),
       decisions: (input) => credentials(decisions(input)),
     })

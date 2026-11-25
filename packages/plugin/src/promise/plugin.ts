@@ -24,6 +24,8 @@ import type { VcsDomain } from "./vcs.js"
 import type { WebSearchDomain } from "./websearch.js"
 import type { WorktreeDomain } from "./worktree.js"
 
+import type { CompletionInput, CompletionOutcome, CompletionContract } from "../effect/plugin.js"
+
 export interface Context {
   readonly app: App
   readonly location: Location.Info
@@ -36,7 +38,12 @@ export interface Context {
   readonly experimental: {
     readonly terminal: Pick<OpenCodeClient["experimental"]["persistentPty"], "read">
     /** Stateless generation with a model and a prompt: no session, history or tools. */
-    readonly generate: ExperimentalGenerateApi
+    readonly generate: ExperimentalGenerateApi & {
+      readonly completion?: {
+        readonly contract: typeof CompletionContract
+        readonly execute: (input: CompletionInput, signal: AbortSignal) => Promise<CompletionOutcome>
+      }
+    }
     readonly artifact: ExperimentalArtifactDomain
   }
   readonly integration: IntegrationDomain

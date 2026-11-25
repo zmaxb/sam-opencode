@@ -333,6 +333,8 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
         text: generateText,
         image: generate.image,
         decisions: generate.decisions,
+        ...(generate.completion === undefined ? {} :
+          { completion: { contract: Plugin.CompletionContract, execute: generate.completion } }),
       },
       artifact: {
         reload: artifacts.reload,

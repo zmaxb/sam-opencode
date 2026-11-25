@@ -24,6 +24,45 @@ import type { VcsDomain } from "./vcs.js"
 import type { WebSearchDomain } from "./websearch.js"
 import type { WorktreeDomain } from "./worktree.js"
 
+export interface CompletionInput {
+  readonly target: {
+    readonly providerId: string
+    readonly modelId: string
+    readonly endpoint: string
+    readonly structuredOutput: boolean
+    readonly reasoning: boolean
+    readonly sharedAdmission: boolean
+  }
+  readonly variant?: string
+  readonly messages: ReadonlyArray<{ readonly role: "system" | "developer" | "user" | "assistant"; readonly content: string }>
+  readonly correlationId: string
+  readonly temperature?: number
+  readonly topP?: number
+  readonly maxTokens?: number
+  readonly reasoning?: string
+  readonly responseFormat?: { readonly type: "text" | "json_object" | "json_schema"; readonly json_schema?: unknown }
+}
+
+export type CompletionOutcome =
+  | { readonly state: "failed"; readonly failure: string }
+  | { readonly state: "succeeded"; readonly result: {
+      readonly provider: string
+      readonly model: string
+      readonly variant?: string
+      readonly text: string
+      readonly refusal: boolean
+      readonly finishReason: string
+      readonly usage?: {
+        readonly promptTokens?: number
+        readonly completionTokens?: number
+        readonly totalTokens?: number
+        readonly cachedPromptTokens?: number
+        readonly reasoningCompletionTokens?: number
+      }
+    } }
+
+export const CompletionContract = "opencode.stateless-completion/v1"
+
 export interface Context {
   readonly app: App
   readonly location: Location.Info
@@ -36,7 +75,12 @@ export interface Context {
   readonly experimental: {
     readonly terminal: Pick<ExperimentalApi<unknown>["persistentPty"], "read">
     /** Stateless generation with a model and a prompt: no session, history or tools. */
-    readonly generate: ExperimentalGenerateApi<unknown>
+    readonly generate: ExperimentalGenerateApi<unknown> & {
+      readonly completion?: {
+        readonly contract: typeof CompletionContract
+        readonly execute: (input: CompletionInput) => Effect.Effect<CompletionOutcome, never>
+      }
+    }
     readonly artifact: ExperimentalArtifactDomain
   }
   readonly integration: IntegrationDomain
