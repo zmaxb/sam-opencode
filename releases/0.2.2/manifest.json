@@ -1,0 +1,64 @@
+{
+  "schema": "sam.opencode-distribution/v1",
+  "version": "0.2.2",
+  "upstream": {
+    "repository": "https://github.com/anomalyco/opencode",
+    "version": "2.3.0",
+    "commit": "a6b15d33daf6ab7d35569f6d711fdb630b9f04e7"
+  },
+  "plugin": {
+    "name": "sam-opencode-context",
+    "release_version": "0.2.2",
+    "wire": "sam.opencode-wire/v3",
+    "source_sam_commit": "6fc2f00e6939f0f4236260155531ef189371d90c",
+    "steering": "run-bound-steering/v1",
+    "identity": "sam.opencode-identity/v1"
+  },
+  "native_patches": [
+    {
+      "name": "v2.3.0-subagent-report-provenance.patch",
+      "commit": "eb22af63f59e77c20be773c58ce46376fb67ba9f",
+      "original_patch_sha256": "92cf72213c9bfb4c4438760171e7467de81fc6a3010621df0faaf260db05b80f"
+    },
+    {
+      "name": "v2.3.0-subagent-report-release.patch",
+      "commit": "ef0de741a5944c6041e0a8f8800769904c443c84",
+      "original_patch_sha256": "707abe0af00a87c2bffdad689c972a3c695863fdfbb8c83a4f4605169a90b7b4"
+    },
+    {
+      "name": "v2.3.0-controlled-background-shell.patch",
+      "commit": "f511ea0974e0798c3e0422e64482af2a6e7850ff",
+      "original_patch_sha256": "b8d2c975def09928c41f74ed987f243d26d6b12b9afe623a2d014d9cee970bf7"
+    },
+    {
+      "name": "v2.3.0-stateless-completion.patch",
+      "commit": "ee23c8f0b78d1418668cd76a3a64f759a3435573",
+      "original_patch_sha256": "9e821c13599476c278d488a2d6cda45c603d7815406507b26fde7cb484616108"
+    },
+    {
+      "name": "native-run-bound-steering",
+      "commit": "e32ae549b3dcb671e5b99f2df429746af3cde90d"
+    },
+    {
+      "name": "frozen-sam-agent-identity",
+      "commit": "ee04d2e4b789e77288664fe27ffdc7b4115e2335"
+    }
+  ],
+  "package_files": [
+    "LICENSE",
+    "tools/opencode/install.sh",
+    "tools/opencode/context/index.mjs",
+    "tools/opencode/context/background.mjs",
+    "tools/opencode/context/processor.mjs",
+    "tools/opencode/context/package.json",
+    "tools/opencode/admission/server.mjs",
+    "tools/opencode/admission/scheduler.mjs",
+    "src/SAM.Runtime.Contracts/AiModels/OpenCodeZenModelRequests.json"
+  ],
+  "qualification": {
+    "evidence": "qualification.json",
+    "required_for_activation": true,
+    "scope": "sam-opencode-identity",
+    "production_sam_integration_required": true
+  }
+}
