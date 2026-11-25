@@ -1,10 +1,20 @@
 export * as SubagentCompletion from "./subagent-completion.js"
 
 import { Effect } from "effect"
+import { createHash } from "node:crypto"
 import type { Job } from "../job.js"
 import type { SessionBackground } from "./background.js"
 import type { SessionMessage } from "./message.js"
 import type { SessionSchema } from "./schema.js"
+
+const provenanceKey = "opencodeSubagentReport"
+
+export function withoutProvenance(metadata: Readonly<Record<string, unknown>> | undefined) {
+  if (!metadata || !Object.hasOwn(metadata, provenanceKey)) return metadata
+  const result = { ...metadata }
+  delete result[provenanceKey]
+  return result
+}
 
 export const NO_TEXT = "Subagent completed without a text response."
 
@@ -70,12 +80,33 @@ export const deliver = Effect.fnUntraced(function* <E>(
   // The body is all a recovered outbox row keeps, so the still-running list is how a replay tells this period apart.
   // Only the model-facing tag says "running": the job and the message metadata keep the period's real status.
   const state = input.status === "completed" && body.includes(STILL_RUNNING) ? "running" : input.status
+  const reportText = `<subagent sessionID="${recovery.childSessionID}" state="${state}" description="${recovery.description}">\n${body}\n</subagent>`
+  const proof = input.notificationID && recovery.callID && state !== "running"
+    ? {
+        contract: "opencode.subagent-report-provenance/v1",
+        jobID: recovery.childSessionID,
+        notificationID: input.notificationID,
+        parentSessionID: recovery.parentSessionID,
+        childSessionID: recovery.childSessionID,
+        callID: recovery.callID,
+        agent: recovery.agent,
+        description: recovery.description,
+        status: input.status,
+        sha256: createHash("sha256").update(reportText, "utf8").digest("hex"),
+      }
+    : undefined
   yield* sessions.synthetic({
     ...(input.notificationID ? { id: input.notificationID } : {}),
     sessionID: recovery.parentSessionID,
     description: recovery.description,
-    text: `<subagent sessionID="${recovery.childSessionID}" state="${state}" description="${recovery.description}">\n${body}\n</subagent>`,
-    metadata: { source: "subagent", childID: recovery.childSessionID, agent: recovery.agent, state: input.status },
+    text: reportText,
+    metadata: {
+      source: "subagent",
+      childID: recovery.childSessionID,
+      agent: recovery.agent,
+      state: input.status,
+      ...(proof ? { [provenanceKey]: proof } : {}),
+    },
   })
   if (input.notificationID) yield* jobs.completeBackground(input.notificationID)
 })

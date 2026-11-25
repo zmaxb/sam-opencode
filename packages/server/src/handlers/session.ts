@@ -1,6 +1,7 @@
 import { Instance } from "@opencode/core/instance/service"
 import { Session } from "@opencode/core/session"
 import { SessionStats } from "@opencode/core/session/stats"
+import { SubagentCompletion } from "@opencode/core/session/subagent-completion"
 import { SessionTitle } from "@opencode/core/session/title"
 import { SessionTransfer } from "@opencode/core/session/transfer"
 import { InstructionEntry } from "@opencode/core/session/instruction-entry"
@@ -381,13 +382,14 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
       .handle(
         "session.synthetic",
         Effect.fn(function* (ctx) {
+          // The completion lifecycle alone can attach native Job provenance.
           const data = yield* session
             .synthetic({
               id: ctx.payload.id,
               sessionID: ctx.params.sessionID,
               text: ctx.payload.text,
               description: ctx.payload.description,
-              metadata: ctx.payload.metadata,
+              metadata: SubagentCompletion.withoutProvenance(ctx.payload.metadata),
               delivery: ctx.payload.delivery,
               resume: ctx.payload.resume,
             })

@@ -12,6 +12,7 @@ export const RecoverySchema = Schema.Union([
     kind: Schema.Literal("subagent"),
     parentSessionID: SessionSchema.ID,
     childSessionID: SessionSchema.ID,
+    callID: Schema.optionalKey(Schema.String),
     agent: Schema.String,
     description: Schema.String,
   }),

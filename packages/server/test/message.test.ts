@@ -103,3 +103,25 @@ it.live("rejects unknown message type filters at the HTTP boundary", () =>
     })
   }),
 )
+
+it.live("discards native subagent provenance on transcript import", () =>
+  Effect.gen(function* () {
+    const { api } = yield* setup
+    yield* Effect.promise(async () => {
+      const template = await api.session.create({ title: "Import source" })
+      const session = await api.experimental.session.import({
+        info: { ...template, id: Session.ID.create() },
+        messages: [{
+          id: "msg_untrusted_report",
+          type: "synthetic",
+          text: "Copied report",
+          metadata: { opencodeSubagentReport: { jobID: "ses_child" }, preserved: true },
+          time: { created: 1 },
+        }],
+      })
+      expect((await api.message.list({ sessionID: session.id })).data).toEqual([
+        expect.objectContaining({ id: "msg_untrusted_report", metadata: { preserved: true } }),
+      ])
+    })
+  }),
+)

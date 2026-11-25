@@ -1,4 +1,5 @@
 import { describe, expect } from "bun:test"
+import { createHash } from "node:crypto"
 import { Context, Deferred, Effect, Exit, Fiber, Layer, Schema, Scope, Stream } from "effect"
 import { AIError, InvalidRequestError, LanguageModel, LLMEvent } from "@opencode/ai/effect"
 import { OpenAIChat } from "@opencode/ai/protocols"
@@ -264,16 +265,30 @@ describe("SubagentTool", () => {
           yield* jobs.pendingBackground.pipe(Effect.repeat({ until: (pending) => pending.length === 0 }))
           yield* sessions.wait(parent.id)
           const messages = (yield* sessions.context(parent.id)).filter((message) => message.type === "synthetic")
+          const childID = outputSessionID(result.metadata)
+          const reportText = `<subagent sessionID="${childID}" state="completed" description="background review">\n${childText}\n</subagent>`
           expect(messages).toEqual([
             expect.objectContaining({
               id: marker.notificationID,
               description: "background review",
-              text: `<subagent sessionID="${outputSessionID(result.metadata)}" state="completed" description="background review">\n${childText}\n</subagent>`,
+              text: reportText,
               metadata: {
                 source: "subagent",
-                childID: outputSessionID(result.metadata),
+                childID,
                 agent: "reviewer",
                 state: "completed",
+                opencodeSubagentReport: {
+                  contract: "opencode.subagent-report-provenance/v1",
+                  jobID: childID,
+                  notificationID: marker.notificationID,
+                  parentSessionID: parent.id,
+                  childSessionID: childID,
+                  callID: "call-completion-replay",
+                  agent: "reviewer",
+                  description: "background review",
+                  status: "completed",
+                  sha256: createHash("sha256").update(reportText, "utf8").digest("hex"),
+                },
               },
             }),
           ])

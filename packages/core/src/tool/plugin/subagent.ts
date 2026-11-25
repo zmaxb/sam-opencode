@@ -217,6 +217,7 @@ export const Plugin = {
                 kind: "subagent" as const,
                 parentSessionID: context.sessionID,
                 childSessionID: child.id,
+                callID: context.id,
                 agent: agent.name,
                 description: input.description,
               }
