@@ -7,13 +7,35 @@ import type { SessionBackground } from "./background.js"
 import type { SessionMessage } from "./message.js"
 import type { SessionSchema } from "./schema.js"
 
-const provenanceKey = "opencodeSubagentReport"
+export const provenanceKey = "opencodeSubagentReport"
+export const controlledKey = "opencodeSubagentReportControlled"
+export const releaseContract = "sam.opencode-subagent-report-release/v1"
 
 export function withoutProvenance(metadata: Readonly<Record<string, unknown>> | undefined) {
-  if (!metadata || !Object.hasOwn(metadata, provenanceKey)) return metadata
+  if (!metadata || (!Object.hasOwn(metadata, provenanceKey) && !Object.hasOwn(metadata, controlledKey))) return metadata
   const result = { ...metadata }
   delete result[provenanceKey]
+  delete result[controlledKey]
   return result
+}
+
+const object = (value: unknown): Record<string, unknown> | undefined =>
+  value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined
+
+export function controlsReports(metadata: SessionSchema.Metadata | undefined) {
+  return object(metadata?.sam)?.subagentReportRelease === releaseContract
+}
+
+export function authorizesRelease(
+  session: SessionSchema.Info,
+  id: SessionMessage.ID,
+  metadata: Readonly<Record<string, unknown>> | undefined,
+) {
+  const authority = object(session.metadata?.sam)
+  const proof = object(metadata?.[provenanceKey])
+  return controlsReports(session.metadata) && authority?.inputId === id &&
+    typeof authority.operation === "string" && typeof authority.inputDigest === "string" &&
+    proof?.parentSessionID === session.id && proof.notificationID === id && proof.sha256 === authority.inputDigest
 }
 
 export const NO_TEXT = "Subagent completed without a text response."
@@ -28,6 +50,7 @@ export interface SyntheticSession<E = never> {
     readonly text: string
     readonly description?: string
     readonly metadata?: SessionSchema.Metadata
+    readonly delivery?: "steer" | "queue"
   }) => Effect.Effect<unknown, E>
 }
 
@@ -68,6 +91,7 @@ export const deliver = Effect.fnUntraced(function* <E>(
   input: Pick<Job.Info, "status" | "output" | "error" | "notificationID"> & {
     recovery: Extract<Job.Recovery, { kind: "subagent" }>
   },
+  controlled = false,
 ) {
   if (input.status === "running") return
   const recovery = input.recovery
@@ -100,12 +124,14 @@ export const deliver = Effect.fnUntraced(function* <E>(
     sessionID: recovery.parentSessionID,
     description: recovery.description,
     text: reportText,
+    ...(controlled ? { delivery: "queue" as const } : {}),
     metadata: {
       source: "subagent",
       childID: recovery.childSessionID,
       agent: recovery.agent,
       state: input.status,
       ...(proof ? { [provenanceKey]: proof } : {}),
+      ...(controlled ? { [controlledKey]: true } : {}),
     },
   })
   if (input.notificationID) yield* jobs.completeBackground(input.notificationID)

@@ -182,6 +182,7 @@ export interface Interface {
   readonly inboxWithRefs: (sessionID: SessionSchema.ID) => Effect.Effect<SessionInbox.MediaInfo[], NotFoundError>
   readonly cancelInbox: (input: InboxItemRef) => Effect.Effect<void, NotFoundError | InboxConflictError>
   readonly steerInbox: (input: InboxItemRef) => Effect.Effect<void, NotFoundError | InboxConflictError>
+  readonly releaseSubagentReport: (input: InboxItemRef) => Effect.Effect<void, NotFoundError | InboxConflictError>
   readonly queueInbox: (input: InboxItemRef) => Effect.Effect<void, NotFoundError | InboxConflictError>
   /**
    * Durable, ordered session log read. Replays durable session bus after
@@ -480,6 +481,7 @@ const layer = Layer.effect(
       }),
       cancelInbox: (input) => sessions.forSession(input.sessionID).cancelInbox(input.inboxID),
       steerInbox: (input) => sessions.forSession(input.sessionID).steerInbox(input.inboxID),
+      releaseSubagentReport: (input) => sessions.forSession(input.sessionID).releaseSubagentReport(input.inboxID),
       queueInbox: (input) => sessions.forSession(input.sessionID).queueInbox(input.inboxID),
       log: (input) =>
         Stream.unwrap(

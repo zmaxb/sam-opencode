@@ -29,6 +29,7 @@ import { SessionShell } from "./shell.js"
 import { SessionSkill } from "./skill.js"
 import { SessionSchema } from "./schema.js"
 import { SessionStore } from "./store.js"
+import { SubagentCompletion } from "./subagent-completion.js"
 
 type PromptRequest = SessionPrompt.Input & {
   id?: SessionMessage.ID
@@ -116,13 +117,13 @@ export const make = Effect.fn("Session.make")(function* () {
       return
     yield* bus.publish(SessionEvent.ModelSelected, { sessionID, model: input.model, previous: session.model })
   })
-  const mutatePending = (
+  const mutatePending = <A>(
     sessionID: SessionSchema.ID,
     inboxID: SessionMessage.ID,
     mutation: (input: {
       readonly id: SessionMessage.ID
       readonly sessionID: SessionSchema.ID
-    }) => Effect.Effect<void, SessionInbox.LifecycleConflict>,
+    }) => Effect.Effect<A, SessionInbox.LifecycleConflict>,
   ) =>
     mutation({ sessionID, id: inboxID }).pipe(
       Effect.catchTag("SessionInbox.LifecycleConflict", () =>
@@ -145,8 +146,15 @@ export const make = Effect.fn("Session.make")(function* () {
     sessionID: SessionSchema.ID,
     inboxID: SessionMessage.ID,
   ) {
-    yield* mutatePending(sessionID, inboxID, admission.steer)
-    yield* execution.wake(sessionID)
+    const wake = yield* mutatePending(sessionID, inboxID, admission.steer)
+    if (wake) yield* execution.wake(sessionID)
+  }, Effect.uninterruptible)
+  const releaseSubagentReport = Effect.fn("Session.releaseSubagentReport")(function* (
+    sessionID: SessionSchema.ID,
+    inboxID: SessionMessage.ID,
+  ) {
+    const wake = yield* mutatePending(sessionID, inboxID, (input) => admission.steer(input, store.get(sessionID)))
+    if (wake) yield* execution.wake(sessionID)
   }, Effect.uninterruptible)
   const queueInbox = Effect.fn("Session.queueInbox")(
     (sessionID: SessionSchema.ID, inboxID: SessionMessage.ID) => mutatePending(sessionID, inboxID, admission.queue),
@@ -320,7 +328,8 @@ export const make = Effect.fn("Session.make")(function* () {
                 () => new SyntheticConflictError({ sessionID, inputID }),
               ),
             )
-          if (input.resume !== false && !(yield* get(sessionID)).revert) yield* execution.wake(sessionID)
+          if (input.resume !== false && admitted.payload.metadata?.[SubagentCompletion.controlledKey] !== true &&
+              !(yield* get(sessionID)).revert) yield* execution.wake(sessionID)
           return admitted
         }),
       ),
@@ -378,6 +387,7 @@ export const make = Effect.fn("Session.make")(function* () {
     interrupt,
     cancelInbox,
     steerInbox,
+    releaseSubagentReport,
     queueInbox,
     revert,
   }
@@ -404,6 +414,7 @@ export const make = Effect.fn("Session.make")(function* () {
     const interrupt = operations.interrupt.bind(undefined, sessionID)
     const cancelInbox = operations.cancelInbox.bind(undefined, sessionID)
     const steerInbox = operations.steerInbox.bind(undefined, sessionID)
+    const releaseSubagentReport = operations.releaseSubagentReport.bind(undefined, sessionID)
     const queueInbox = operations.queueInbox.bind(undefined, sessionID)
     const stage = operations.revert.stage.bind(undefined, sessionID)
     const clear = operations.revert.clear.bind(undefined, sessionID)
@@ -433,6 +444,7 @@ export const make = Effect.fn("Session.make")(function* () {
       interrupt,
       cancelInbox,
       steerInbox,
+    releaseSubagentReport,
       queueInbox,
       revert,
     }

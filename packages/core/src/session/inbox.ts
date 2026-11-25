@@ -1,6 +1,6 @@
 export * as SessionInbox from "./inbox.js"
 
-import { and, asc, eq, or } from "drizzle-orm"
+import { and, asc, eq, not, or, sql } from "drizzle-orm"
 import { Context, DateTime, Effect, Layer, Schema } from "effect"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import {
@@ -27,8 +27,9 @@ import { SessionBlob } from "./blob.js"
 import { SessionMessage } from "./message.js"
 import { SessionSchema } from "./schema.js"
 import { SessionStored } from "./stored.js"
-import { SessionInboxTable, SessionMessageTable } from "./sql.js"
+import { SessionInboxTable, SessionMessageTable, SessionTable } from "./sql.js"
 import { SessionHistory } from "./history.js"
+import { SubagentCompletion } from "./subagent-completion.js"
 
 type DatabaseService = Database.Interface["db"]
 
@@ -68,6 +69,19 @@ const decodeMove = Schema.decodeUnknownSync(MovePayload)
 const encodeMove = Schema.encodeSync(MovePayload)
 const inboxLocks = KeyedMutex.makeUnsafe<SessionSchema.ID>()
 type PendingRef = { readonly id: SessionMessage.ID; readonly sessionID: SessionSchema.ID }
+
+const controlledReport = sql`(${SessionInboxTable.type} = 'synthetic' and coalesce(
+  json_extract(${SessionInboxTable.payload}, ${"$.metadata." + SubagentCompletion.controlledKey}), 0) = 1)`
+const ordinaryQueue = and(eq(SessionInboxTable.delivery, "queue"), not(controlledReport))
+const eligibleSteer = and(eq(SessionInboxTable.delivery, "steer"), or(not(controlledReport), sql`exists (
+  select 1 from ${SessionTable}
+  where ${SessionTable.id} = ${SessionInboxTable.session_id}
+    and json_extract(${SessionTable.metadata}, '$.sam.subagentReportRelease') = ${SubagentCompletion.releaseContract}
+    and json_extract(${SessionTable.metadata}, '$.sam.inputId') = ${SessionInboxTable.id}
+    and json_type(${SessionTable.metadata}, '$.sam.operation') = 'text'
+    and json_extract(${SessionTable.metadata}, '$.sam.inputDigest') =
+      json_extract(${SessionInboxTable.payload}, ${"$.metadata." + SubagentCompletion.provenanceKey + ".sha256"})
+)`))
 
 export const serialized = <A, E, R>(sessionID: SessionSchema.ID, effect: Effect.Effect<A, E, R>) =>
   inboxLocks.withLock(sessionID)(effect)
@@ -259,16 +273,33 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
     ),
   )
 
-  const steer = Effect.fn("SessionInbox.steer")((input: PendingRef) =>
-    publishMutation(
-      input,
-      bus.publish(SessionEvent.InboxDeliveryChanged, {
+  const steer = Effect.fn("SessionInbox.steer")(function* (
+    input: PendingRef,
+    getSession?: Effect.Effect<SessionSchema.Info | undefined>,
+  ) {
+    return yield* serialized(input.sessionID, Effect.gen(function* () {
+      const pending = yield* find(db, input.id)
+      const item = pending ?? (yield* promotedFromMessage(db, input.sessionID, input.id, "steer"))
+      const controlled = item?.type === "synthetic" && item.payload.metadata?.[SubagentCompletion.controlledKey] === true
+      if (controlled !== (getSession !== undefined)) return yield* new LifecycleConflict({ id: input.id })
+      if (controlled && getSession) {
+        const session = yield* getSession
+        if (item.sessionID !== input.sessionID || !session || session.revert ||
+            !SubagentCompletion.authorizesRelease(session, item.id, item.payload.metadata))
+          return yield* new LifecycleConflict({ id: input.id })
+        if (!pending) return false
+        if (pending.delivery === "steer") return true
+      }
+      yield* bus.publish(SessionEvent.InboxDeliveryChanged, {
         sessionID: input.sessionID,
         inboxID: input.id,
         delivery: "steer",
-      }),
-    ),
-  )
+      })
+      return true
+    })).pipe(
+      Effect.catchDefect((defect) => (defect instanceof LifecycleConflict ? Effect.fail(defect) : Effect.die(defect))),
+    )
+  })
 
   const queue = Effect.fn("SessionInbox.queue")((input: PendingRef) =>
     publishMutation(
@@ -355,7 +386,8 @@ export const projectDelivered = Effect.fn("SessionInbox.projectDelivered")(funct
 ) {
   const deleted = yield* db
     .delete(SessionInboxTable)
-    .where(and(eq(SessionInboxTable.id, input.id), eq(SessionInboxTable.session_id, input.sessionID)))
+    .where(and(eq(SessionInboxTable.id, input.id), eq(SessionInboxTable.session_id, input.sessionID),
+      or(not(controlledReport), eligibleSteer)))
     .returning()
     .get()
     .pipe(Effect.orDie)
@@ -386,6 +418,7 @@ export const projectCancelled = Effect.fn("SessionInbox.projectCancelled")(funct
         eq(SessionInboxTable.id, input.id),
         eq(SessionInboxTable.session_id, input.sessionID),
         or(eq(SessionInboxTable.delivery, "queue"), eq(SessionInboxTable.delivery, "steer")),
+        not(controlledReport),
       ),
     )
     .returning({ id: SessionInboxTable.id })
@@ -407,6 +440,7 @@ const projectDelivery = Effect.fn("SessionInbox.projectDelivery")(function* (
         eq(SessionInboxTable.id, input.id),
         eq(SessionInboxTable.session_id, input.sessionID),
         eq(SessionInboxTable.delivery, input.from),
+        input.to === "queue" ? not(controlledReport) : undefined,
       ),
     )
     .returning({ id: SessionInboxTable.id })
@@ -509,8 +543,8 @@ export const has = Effect.fn("SessionInbox.has")(function* (
       and(
         eq(SessionInboxTable.session_id, sessionID),
         scope === "input"
-          ? or(eq(SessionInboxTable.delivery, "steer"), eq(SessionInboxTable.delivery, "queue"))
-          : eq(SessionInboxTable.delivery, scope),
+          ? or(eligibleSteer, ordinaryQueue)
+          : scope === "queue" ? ordinaryQueue : eligibleSteer,
       ),
     )
     .limit(1)
@@ -599,7 +633,7 @@ const firstQueued = (db: DatabaseService, sessionID: SessionSchema.ID) =>
   db
     .select()
     .from(SessionInboxTable)
-    .where(and(eq(SessionInboxTable.session_id, sessionID), eq(SessionInboxTable.delivery, "queue")))
+    .where(and(eq(SessionInboxTable.session_id, sessionID), ordinaryQueue))
     .orderBy(asc(SessionInboxTable.enqueued_seq))
     .limit(1)
     .get()
@@ -609,7 +643,7 @@ const pendingSteers = (db: DatabaseService, sessionID: SessionSchema.ID) =>
   db
     .select()
     .from(SessionInboxTable)
-    .where(and(eq(SessionInboxTable.session_id, sessionID), eq(SessionInboxTable.delivery, "steer")))
+    .where(and(eq(SessionInboxTable.session_id, sessionID), eligibleSteer))
     .orderBy(asc(SessionInboxTable.enqueued_seq))
     .all()
     .pipe(

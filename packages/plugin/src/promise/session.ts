@@ -235,5 +235,6 @@ export type SessionDomain = Pick<
   | "context"
 > &
   Pick<ExperimentalSessionApi, "wait" | "instructions"> & {
+    readonly releaseSubagentReport: (input: { sessionID: Session.ID; inboxID: SessionMessage.ID }) => Promise<void>
     readonly hook: ModelHooks<SessionHooks>
   }

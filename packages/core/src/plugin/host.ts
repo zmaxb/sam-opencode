@@ -601,6 +601,7 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
       }),
       move: sessions.move,
       synthetic: sessions.synthetic,
+      releaseSubagentReport: sessions.releaseSubagentReport,
       interrupt: (input) =>
         sessions
           .interrupt(input.sessionID, { resume: input.resume })

@@ -306,6 +306,49 @@ const waitForReports = Effect.fnUntraced(function* (
 })
 
 describe("subagent idle reports end to end", () => {
+  e2e.live("holds a native report until the bound run releases its notification ID", () =>
+    Effect.gen(function* () {
+      const h = yield* harness()
+      const sessionID = h.parent.id
+      const subagentReportRelease = "sam.opencode-subagent-report-release/v1"
+      yield* h.sessions.setMetadata({ sessionID, metadata: { sam: { subagentReportRelease } } })
+      yield* h.llm.serve(script({
+        reviewer: [TestLLM.text("Result", "child-answer")],
+        build: [TestLLM.text("User turn", "user-turn"), TestLLM.text("Received", "parent-answer")],
+      }))
+      yield* h.call("call-held-report")
+      const inbox = yield* h.sessions.inbox(sessionID).pipe(
+        Effect.repeat({ until: (items) => items.length > 0, schedule: Schedule.spaced(10) }),
+      )
+      expect(inbox).toHaveLength(1)
+      const report = inbox[0]
+      if (report.type !== "synthetic") throw new Error("Expected a native report")
+      expect(report.delivery).toBe("queue")
+      expect(yield* deliveredReports(h, sessionID)).toEqual([])
+      expect((yield* h.execution.active).has(sessionID)).toBeFalse()
+      const ref = { sessionID, inboxID: report.id }
+      expect((yield* h.sessions.steerInbox(ref).pipe(Effect.result))._tag).toBe("Failure")
+      expect((yield* h.sessions.releaseSubagentReport(ref).pipe(Effect.result))._tag).toBe("Failure")
+      expect((yield* h.sessions.cancelInbox(ref).pipe(Effect.result))._tag).toBe("Failure")
+      expect(yield* h.sessions.inbox(sessionID)).toEqual(inbox)
+      yield* h.sessions.prompt({ sessionID, text: "Another request", delivery: "queue" })
+      yield* h.sessions.wait(sessionID)
+      expect(yield* h.sessions.inbox(sessionID)).toEqual(inbox)
+      expect(yield* deliveredReports(h, sessionID)).toEqual([])
+
+      const proof = report.payload.metadata?.opencodeSubagentReport as { sha256: string }
+      yield* h.sessions.setMetadata({
+        sessionID,
+        metadata: { sam: { subagentReportRelease, operation: "accepted-run", inputId: report.id, inputDigest: proof.sha256 } },
+      })
+      yield* h.sessions.releaseSubagentReport(ref)
+      yield* waitForReports(h, sessionID, 1)
+      yield* h.sessions.releaseSubagentReport(ref)
+      expect((yield* h.execution.active).has(sessionID)).toBeFalse()
+      expect((yield* deliveredReports(h, sessionID)).map((message) => message.id)).toEqual([report.id])
+    }),
+  )
+
   e2e.live(
     "reports immediately with running background work and again after the shell exits",
     () =>

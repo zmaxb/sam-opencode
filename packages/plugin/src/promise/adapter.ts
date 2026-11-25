@@ -642,6 +642,7 @@ export function fromPromise(plugin: Plugin) {
             command: adaptApiMethod(SessionEndpoints["session.command"], host.session.command),
             compact: adaptApiMethod(SessionEndpoints["session.compact"], host.session.compact),
             synthetic: adaptApiMethod(SessionEndpoints["session.synthetic"], host.session.synthetic),
+            releaseSubagentReport: (input) => run(host.session.releaseSubagentReport(input)),
             interrupt: adaptApiMethod(SessionEndpoints["session.interrupt"], host.session.interrupt),
             update: adaptApiMethod(SessionEndpoints["session.update"], host.session.update),
             move: adaptApiMethod(SessionEndpoints["session.move"], host.session.move),

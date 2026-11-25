@@ -73,10 +73,12 @@ export const make = (deps: Deps) => {
 
   const deliverReport = Effect.fnUntraced(function* (report: Job.SubagentOutboxReport) {
     const parentID = report.recovery.parentSessionID
-    if (!(yield* deps.store.get(parentID))) {
+    const owner = yield* deps.store.get(parentID)
+    if (!owner) {
       yield* deps.jobs.completeBackground(report.notificationID)
       return
     }
+    const controlled = SubagentCompletion.controlsReports(owner.metadata)
     const delivered = yield* SubagentCompletion.deliver(
       {
         synthetic: (notice) =>
@@ -90,12 +92,13 @@ export const make = (deps: Deps) => {
                 description: notice.description,
                 metadata: notice.metadata,
               }),
-              delivery: "steer",
+              delivery: notice.delivery ?? "steer",
             },
           }),
       },
       deps.jobs,
       report,
+      controlled,
     ).pipe(
       Effect.as(true),
       // Retain the formatted outbox row: the conflict proves the notification ID is already
@@ -122,7 +125,7 @@ export const make = (deps: Deps) => {
           ),
       ),
     )
-    if (!delivered) return
+    if (!delivered || controlled) return
     const parent = yield* deps.store.get(parentID)
     if (parent && !parent.revert) yield* deps.wake(parentID)
   })

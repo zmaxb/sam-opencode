@@ -289,11 +289,12 @@ export const layer = (options?: Options) =>
         recovery: Extract<Job.Recovery, { kind: "subagent" }>,
         result: Pick<Job.Background, "status" | "output" | "error">,
       ) {
+        const owner = yield* store.get(recovery.parentSessionID)
         yield* SubagentCompletion.deliver(notices, jobs, {
           ...result,
           recovery,
           notificationID,
-        }).pipe(
+        }, SubagentCompletion.controlsReports(owner?.metadata)).pipe(
           // A deleted parent owes nothing to the report; clear its row.
           Effect.catchTag("Session.NotFoundError", () => jobs.completeBackground(notificationID)),
           // Retain the formatted outbox row for the next boot: the notification ID is
@@ -404,6 +405,7 @@ export const layer = (options?: Options) =>
             synthetic: (input) =>
               sessions.synthetic({ ...input, resume: false }).pipe(
                 Effect.tap(() => {
+                  if (input.metadata?.[SubagentCompletion.controlledKey] === true) return Effect.void
                   if (suspended.has(input.sessionID)) return Effect.void
                   if (!state.defer) return wake(input.sessionID)
                   wakes.add(input.sessionID)
