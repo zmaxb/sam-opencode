@@ -936,7 +936,7 @@ export default {
                         const index = transcript.findIndex(item => item.id === message.id);
                         const native = transcript[index];
                         if (index <= previousContinuation || typeof native?.text !== 'string' || textOf(message) !== native.text)
-                            reject('unconfirmed continuation');
+                            reject('unconfirmed synthetic continuation');
                         const digest = sha256(native.text);
                         const binding = native.metadata?.opencodeBoundSteering;
                         const steering = native.type === 'user' && steeringMessage.test(native.id) &&
@@ -947,7 +947,7 @@ export default {
                         const background = !steering &&
                             await jobs.continuation(run.sessionId, run.expected, native, run.tools);
                         if (!steering && !background && !isLengthContinuation(transcript, index))
-                            reject('unconfirmed continuation');
+                            reject('unconfirmed synthetic continuation');
                         previousContinuation = index;
                         continuations.push({ id: message.id, digest, background });
                     }
