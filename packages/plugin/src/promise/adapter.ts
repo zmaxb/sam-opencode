@@ -342,6 +342,7 @@ export function fromPromise(plugin: Plugin) {
               ),
           },
           experimental: {
+            systemBudget: host.experimental.systemBudget,
             terminal: {
               read: adaptApiMethod(ExperimentalEndpoints["persistentPty.read"], host.experimental.terminal.read),
             },

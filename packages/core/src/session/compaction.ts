@@ -1132,17 +1132,24 @@ export const estimateContext = (context: SessionContext.Loaded) => total(estimat
 export const estimatePrompt = (context: SessionContext.Loaded): Estimate => {
   const anchorIndex = context.messages.findLastIndex((message) => hasMeasuredPrompt(message, context.model.ref))
   const anchor = context.messages[anchorIndex]
-  const base = transcript(context, context.messages.slice(Math.max(0, anchorIndex)))
+  const projected = context.systemBudget
+  const current = projected && context.messages.findIndex((message) => message.id === projected.inputID)
+  // Only reuse measured tokens from a response to this Run's frozen system prefix.
+  const useMeasurement = current === undefined || (current >= 0 && current < anchorIndex)
+  const base = projected ?? transcript(context, context.messages.slice(Math.max(0, anchorIndex)))
+  const messages = projected && useMeasurement && anchor
+    ? base.messages.slice(Math.max(0, base.messages.findIndex((message) => message.id === anchor.id)))
+    : base.messages
   // TODO: Pass compaction history the runner has already shaped. This and `recentUserMessages` repeat the
   // runner's unsupported-media and image-budget passes; here the image budget only sees images since the anchor,
   // so image-heavy sessions can estimate high.
   const sent = SessionModelRequest.boundImages(
-    SessionModelRequest.unsupportedParts(base.messages, context.model.capabilities),
+    SessionModelRequest.unsupportedParts(messages, context.model.capabilities),
   )
   // The anchor's usage covers its own output, but not its local tool results, which the provider never saw.
-  const unmeasured = sent.filter((message) => message.role !== "assistant" || message.id !== anchor?.id)
+  const unmeasured = useMeasurement ? sent.filter((message) => message.role !== "assistant" || message.id !== anchor?.id) : sent
 
-  if (anchor?.type !== "assistant" || !anchor.tokens)
+  if (!useMeasurement || anchor?.type !== "assistant" || !anchor.tokens)
     return {
       measured: 0,
       estimated: estimateRequest({ system: base.system, tools: context.tools.definitions, messages: unmeasured }),

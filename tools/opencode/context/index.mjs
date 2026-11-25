@@ -5,6 +5,7 @@ import { processor, processorContract } from './processor.mjs';
 
 const contract = 'sam.opencode-wire/v3';
 const steeringContract = 'run-bound-steering/v1';
+const identityContract = 'sam.opencode-identity/v1';
 const steeringMessage = /^msg_steer_[0-9a-f]{32}$/;
 const zenContextContract = 'sam.opencode-zen-context/v1';
 // Qualification data, not an open-ended provider/URL allow-list. Add models only after native qualification.
@@ -157,6 +158,7 @@ export default {
     id: 'sam-opencode-context',
     async setup(ctx) {
         const jobs = background(ctx, epoch);
+        const identitySupported = ctx.experimental?.systemBudget === true;
         const completion = processor(ctx, epoch);
         const processorTargets = await completion.qualification();
         const definitions = new Map();
@@ -181,6 +183,9 @@ export default {
                 reject('unknown local model request scope');
             if (expected?.modelRequest !== undefined) requestScope(expected);
             if (expected?.epoch !== epoch || !catalogue) reject('session authority unavailable');
+            if (expected.baseKey !== undefined && (!identitySupported ||
+                expected.baseKey !== 'native-default' && !/^[a-f0-9]{64}$/.test(expected.baseKey)))
+                reject('unknown SAM identity authority');
             if (!runs.has(sessionId)) runs.set(sessionId, {
                 expected, sessionId, catalogue, steps: [], tools: new Map(), requests: new WeakMap(),
                 work: new Map(), native: new Map(), attempts: new Map(), argumentRejections: new Map(), incompleteOffers: new Map(), continuations: [],
@@ -469,6 +474,7 @@ export default {
                 return {
                     ...(processorTargets.length ? { processor: { contract: processorContract, targets: processorTargets } } : {}),
                     contract, epoch, steering: steeringContract, zenContext: zenContextContract, modelRequests: structuredClone(modelRequests),
+                    ...(identitySupported ? { identity: identityContract } : {}),
                     backgroundJobs: jobs.qualification,
                     lateBackgroundResult: jobs.qualification ? 'opencode.background-result.v1' : null,
                     detachedCleanup: jobs.qualification && typeof ctx.session.remove === 'function' ? 'opencode.detached-session-cleanup.v1' : null,
@@ -513,7 +519,7 @@ export default {
                     [...prior.work.values()].some(item => !['model', 'native-started'].includes(item.public.kind)) ||
                     canonical(prior.expected) !== canonical(previous) || canonical(session.metadata?.sam) !== canonical(previous) ||
                     !previous.continuity || authority.continuity?.previousInput !== previous.inputId ||
-                    authority.epoch !== epoch || authority.catalogDigest !== previous.catalogDigest ||
+                    authority.epoch !== epoch || authority.catalogDigest !== previous.catalogDigest || authority.baseKey !== previous.baseKey ||
                     authority.model !== previous.model || canonical(authority.modelRequest) !== canonical(previous.modelRequest) || canonical(authority.autonomy) !== canonical(previous.autonomy) ||
                     !Array.isArray(history?.users) || !Array.isArray(history?.answers) || !Array.isArray(history?.tools))
                     reject('previous SAM run is unavailable');
@@ -802,19 +808,47 @@ export default {
             }
         });
 
-        const applyContext = async (run, event) => {
+        const applyContext = async (run, event, kind) => {
             const entries = await ctx.session.instructions.entry.list({ sessionID: event.sessionID });
             const value = run.contextText ?? entries.find(entry => entry.key === 'sam-context')?.value;
             if (typeof value !== 'string' || sha256(value) !== run.expected.contextDigest)
                 reject('SAM context entry does not match accepted run');
-            const block = { type: 'text', text: `<context key="sam-context">\n${value}\n</context>` };
-            if (requestScope(run.expected)) {
-                event.system = [block];
+            const hasIdentity = run.expected.baseKey !== undefined;
+            const cloud = requestScope(run.expected);
+            const identity = hasIdentity ? JSON.parse(value) : null;
+            if (hasIdentity && (!identity || typeof identity.Context !== 'string' ||
+                !(identity.Base === null || typeof identity.Base === 'string') ||
+                (identity.Base === null ? 'native-default' : sha256(identity.Base)) !== run.expected.baseKey))
+                reject('SAM identity entry does not match accepted run');
+            const block = { type: 'text', text: `<context key="sam-context">\n${identity?.Context ?? value}\n</context>` };
+
+            if (hasIdentity) {
+                const retained = event.system.filter(part => !part.metadata?.experimental?.agentBase)
+                    .map(part => ({ ...part, text: part.text.replace(samContextBlock, '') }))
+                    .filter(part => part.text.trim());
+                const originals = event.system.filter(part => part.metadata?.experimental?.agentBase);
+                if (originals.length !== 1) reject('OpenCode base component unavailable');
+                const original = originals[0];
+                const base = identity.Base ?? (cloud ? '' : original.text);
+                const technical = !cloud && identity.Base !== null ? original.metadata.experimental.technical : '';
+                event.system = [
+                    ...(base.length ? [{ type: 'text', text: base }] : []),
+                    block,
+                    ...(technical ? [{ type: 'text', text: technical }] : []),
+                    ...(cloud ? [] : retained)
+                ];
+                if (kind) {
+                    run.systemWire ??= new Map();
+                    run.systemWire.set(kind, event.system.map(part => part.text).join('\n'));
+                }
+            } else if (cloud) event.system = [block];
+            else event.system = event.system.map(part => ({ ...part, text: part.text.replace(samContextBlock, '') }))
+                .filter(part => part.text.trim());
+
+            if (cloud) {
                 event.messages = event.messages.filter(message => message.role !== 'system' && message.role !== 'developer');
                 return;
             }
-            event.system = event.system.map(part => ({ ...part, text: part.text.replace(samContextBlock, '') }))
-                .filter(part => part.text.trim());
             // OpenCode lowers chronological instruction updates into user messages for Ollama.
             event.messages = event.messages.flatMap(message => {
                 if (message.role !== 'system') return [message];
@@ -822,8 +856,14 @@ export default {
                     .filter(part => typeof part.text !== 'string' || !part.text.includes('The context under "sam-context" changed'));
                 return content.length ? [{ ...message, content }] : [];
             });
-            event.system.push(block);
+            if (!hasIdentity) event.system.push(block);
         };
+        if (identitySupported) await ctx.session.hook('experimental.system.budget', async event => {
+            const run = await sessionRun(event.sessionID);
+            if (run?.expected.baseKey === undefined) return;
+            await applyContext(run, event);
+            event.inputID = run.expected.inputId;
+        });
         const checkpointProof = text => {
             const match = /^<conversation-checkpoint>\n[\s\S]*?\n<summary>\n([\s\S]*?)\n<\/summary>\n[\s\S]*<\/conversation-checkpoint>$/.exec(text);
             return match ? sha256(match[1]) : null;
@@ -857,7 +897,7 @@ export default {
             const system = messages.filter(message => message.role === 'system');
             const text = system.length === 1 && textOf(system[0]);
             const context = typeof text === 'string' ? [...text.matchAll(samContextBlock)] : [];
-            if (context.length !== 1 || context[0][0] !== text || sha256(context[0][1]) !== run.expected.contextDigest)
+            if (run.expected.baseKey === undefined && (context.length !== 1 || context[0][0] !== text || sha256(context[0][1]) !== run.expected.contextDigest))
                 reject('cloud system context exceeds the accepted SAM context');
             const observed = assistantText(messages).map(item => sha256(item.text));
             if (!compacting) {
@@ -889,7 +929,7 @@ export default {
             const run = await sessionRun(event.sessionID);
             if (!run) return;
             const cloud = requestScope(run.expected);
-            if (cloud || run.expected.continuity) await applyContext(run, event);
+            if (cloud || run.expected.continuity || run.expected.baseKey !== undefined) await applyContext(run, event, 'primary');
             if (run.expected.continuity) {
                 historicalMessages(run, event);
                 const last = run.compactions.at(-1);
@@ -1083,7 +1123,7 @@ export default {
             const checkpoint = transcript.at(-1);
             if (checkpoint?.type !== 'compaction' || checkpoint.reason !== 'auto' || checkpoint.status !== 'running')
                 reject('compaction has no active native boundary');
-            await applyContext(run, event);
+            await applyContext(run, event, 'compaction');
             historicalMessages(run, event);
             const index = event.messages.findIndex(message => matchesInput(message, run.expected));
             const previousIndex = previous ? event.messages.findIndex(message => message.id === previous.id) : -1;
@@ -1136,15 +1176,27 @@ export default {
                 if (recipient && (payload.stream !== true || payload.model !== recipient.modelId))
                     reject('qualified model streaming request changed');
                 if (scope) verifyZenTranscript(run, payload.messages, compacting);
-                const exact = payload.messages.flatMap(message =>
-                    typeof message.content === 'string' ? [...message.content.matchAll(samContextBlock)] : []);
+                let contextMatches;
+                if (expected.baseKey === undefined) {
+                    const exact = payload.messages.flatMap(message =>
+                        typeof message.content === 'string' ? [...message.content.matchAll(samContextBlock)] : []);
+                    contextMatches = exact.length === 1 && sha256(exact[0][1]) === expected.contextDigest;
+                } else {
+                    const expectedSystem = run.systemWire?.get(event.kind);
+                    const system = payload.messages.filter(message => message.role === 'system');
+                    contextMatches = typeof expectedSystem === 'string' && system.length === 1 &&
+                        payload.messages[0] === system[0] &&
+                        (typeof system[0].content === 'string' ? system[0].content :
+                            system[0].content?.map(part => part.text).join('\n')) === expectedSystem &&
+                        !payload.messages.some(message => message.role === 'developer');
+                }
                 const users = payload.messages.filter(message => message.role === 'user');
                 if (compacting) {
                     // Only the hook for the active native compaction may admit a tool-free Ollama request.
                     // No automatic retry of an ambiguous dispatch; the native template nudge also needs separate evidence.
                     if (run.compactions.some(fact => !fact.summaryDigest) ||
                         (event.model.variant ?? 'default') !== (session.model.variant ?? 'default') ||
-                        exact.length !== 1 || sha256(exact[0][1]) !== expected.contextDigest ||
+                        !contextMatches ||
                         payload.model !== expected.model || payload.tools?.length ||
                         !String(users.at(-1)?.content).includes('Do not continue the task or call tools.'))
                         reject('compaction request is outside the qualified scope');
@@ -1167,7 +1219,7 @@ export default {
                 const functions = (payload.tools ?? []).map(tool => tool.function);
                 const names = functions.map(tool => tool?.name);
                 const expectedCount = run.catalogue.size + run.nativeDefinitions.size;
-                if (exact.length !== 1 || sha256(exact[0][1]) !== expected.contextDigest || payload.model !== expected.model
+                if (!contextMatches || payload.model !== expected.model
                     || input.length !== run.history.users.length + 1 + run.continuations.length ||
                     run.continuations.some((item, index) => sha256(input[run.history.users.length + 1 + index]?.content ?? '') !== item.digest) ||
                     (expected.attachmentManifest === undefined

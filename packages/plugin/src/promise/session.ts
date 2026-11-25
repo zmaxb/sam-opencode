@@ -38,6 +38,11 @@ export interface SessionRequest {
   options: SessionRequestOptions
 }
 
+/** Projects the current system instructions for sizing without admitting a model request. */
+export interface SessionSystemBudget extends SessionRequest {
+  inputID?: SessionMessage.ID
+}
+
 export interface SessionContext extends SessionRequest {
   readonly agent: Agent.ID
   tools: Record<string, { description: string; input: JsonSchema.JsonSchema }>
@@ -203,6 +208,7 @@ export interface SessionHooks {
   readonly fork: { readonly sessionID: Session.ID }
   readonly prompt: SessionPrompt
   readonly context: SessionContext
+  readonly "experimental.system.budget": SessionSystemBudget
   readonly compaction: SessionCompaction
   readonly generate: SessionGenerate
   readonly title: SessionTitle

@@ -4,7 +4,7 @@ import { Model } from "../model.js"
 import { Permission } from "../permission.js"
 import { Context, Effect, Layer } from "effect"
 import { Agent } from "../agent.js"
-import type { SessionRequestKind } from "@opencode/plugin/effect/session"
+import type { SessionRequestKind, SessionSystemBudget } from "@opencode/plugin/effect/session"
 import { CodeModeInstructions } from "../codemode/instructions.js"
 import { Database } from "../database/database.js"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
@@ -37,6 +37,7 @@ export interface Loaded {
   readonly session: SessionSchema.Info
   readonly agent: Agent.Selection & { readonly info: Agent.Info }
   readonly model: SessionRunnerModel.Resolved
+  readonly systemBudget?: SessionSystemBudget
   readonly initial: ReadonlyArray<Instructions.Rendered>
   readonly messages: ReadonlyArray<SessionMessage.Info>
   readonly tools: Tool.Snapshot
@@ -183,12 +184,26 @@ const layer = Layer.effect(
         selection.instructions,
         model.ref,
       )
+      const messages = history.entries.map((entry) => entry.message)
+      const systemBudget = yield* request.systemBudget({
+        session: selection.session,
+        agent: selection.agent.id,
+        model,
+        ...SessionModelRequest.baseTranscript({
+          agent: selection.agent.info,
+          model,
+          tools: selection.tools,
+          initial: history.initial,
+          messages,
+        }),
+      })
       return {
         session: selection.session,
         agent: selection.agent,
         model,
+        systemBudget,
         initial: history.initial,
-        messages: history.entries.map((entry) => entry.message),
+        messages,
         tools: selection.tools,
       }
     })

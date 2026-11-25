@@ -337,7 +337,7 @@ const layer = Layer.effect(
             if (!outcome.needsContinuation) {
               if (closeRoot) yield* closeRoot
               yield* compaction.precompute(
-                store.context(sessionID).pipe(Effect.map((messages) => ({ ...loaded, messages }))),
+                store.context(sessionID).pipe(Effect.map((messages) => ({ ...loaded, messages, systemBudget: undefined }))),
               )
             }
             return outcome.needsContinuation

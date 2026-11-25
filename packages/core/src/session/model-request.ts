@@ -25,6 +25,7 @@ import type {
   SessionRequest,
   SessionRequestKind,
   SessionRequestMessage,
+  SessionSystemBudget,
   SessionTitle,
 } from "@opencode/plugin/effect/session"
 import type { Agent } from "@opencode/schema/agent"
@@ -111,14 +112,21 @@ export const baseTranscript = (input: {
   readonly messages: ReadonlyArray<SessionMessage.Info>
 }) => {
   const providerMetadataKey = input.model.model.route.providerMetadataKey ?? input.model.model.provider
+  const names = input.tools.definitions.map((tool) => tool.name)
   return {
     providerMetadataKey,
     system: [
-      SystemPart.make(
-        input.agent.system
-          ? input.agent.system
-          : SessionSystemPrompt.make(input.tools.definitions.map((tool) => tool.name)),
-      ),
+      {
+        ...SystemPart.make(input.agent.system || SessionSystemPrompt.make(names)),
+        metadata: {
+          experimental: {
+            agentBase: true,
+            technical: ["Treat system-reminder blocks as harness instructions.", SessionSystemPrompt.toolGuidance(names)]
+              .filter(Boolean)
+              .join("\n"),
+          },
+        },
+      },
       {
         ...SystemPart.make(Instructions.join(input.initial)),
         metadata: { experimental: { instructions: input.initial } },
@@ -257,6 +265,7 @@ type Definitions = PluginHooks.Domains["session"]["context"]["tools"]
 /** Builds the model request for each session flow. Each entry runs its own plugin hook. */
 export interface Interface {
   readonly primary: (input: Input) => Effect.Effect<Prepared<SessionContext>>
+  readonly systemBudget: (input: Input) => Effect.Effect<SessionSystemBudget | undefined>
   readonly compaction: (input: Input) => Effect.Effect<Prepared<SessionCompaction>>
   readonly generate: (input: Input) => Effect.Effect<Prepared<SessionGenerate>>
   readonly title: (input: Input) => Effect.Effect<Prepared<SessionTitle>>
@@ -465,6 +474,17 @@ export const layer = Layer.effect(
         hooks.trigger("session", name, { ...draft, agent, tools })
 
     return Service.of({
+      systemBudget: Effect.fnUntraced(function* (input) {
+        if (!(yield* hooks.has("session", "experimental.system.budget", input.model.ref.providerID))) return
+        const event = yield* hooks.trigger("session", "experimental.system.budget", {
+          sessionID: input.session.id,
+          model: input.model.ref,
+          system: input.system,
+          messages: input.messages,
+          options: {},
+        })
+        if (event.inputID !== undefined) return event
+      }),
       primary: (input) => prepare("primary", input, agentHook("context", input.agent)),
       compaction: (input) => prepare("compaction", input, agentHook("compaction", input.agent)),
       generate: (input) => prepare("generate", input, agentHook("generate", input.agent)),
