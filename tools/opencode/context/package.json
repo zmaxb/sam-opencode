@@ -1,0 +1,6 @@
+{
+  "name": "sam-opencode-context",
+  "private": true,
+  "type": "module",
+  "exports": { "./server": "./index.mjs" }
+}

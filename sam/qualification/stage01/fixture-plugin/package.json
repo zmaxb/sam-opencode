@@ -1,0 +1,6 @@
+{
+  "name": "stage01-shell-fixture",
+  "private": true,
+  "type": "module",
+  "exports": { "./server": "./index.mjs" }
+}

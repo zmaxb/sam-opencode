@@ -1,0 +1,11 @@
+{
+  "providerId": "opencode",
+  "variant": "default",
+  "apiFamily": "openai.chat-completions",
+  "endpoint": "https://opencode.ai/inference/openai/v1/chat/completions",
+  "modelIds": [
+    "big-pickle",
+    "deepseek-v4.1-flash-free",
+    "mimo-v2.6-flash-free"
+  ]
+}
