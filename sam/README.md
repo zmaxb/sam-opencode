@@ -8,12 +8,16 @@ SAM OpenCode tracks [OpenCode upstream](https://github.com/anomalyco/opencode) w
 - `sam/qualification/` and `tests/OpenCode/` contain Native and Plugin qualification. SAM retains its Runtime integration harness and database scenarios.
 - `releases/` contains the release specification and distribution changelog.
 
+## Production release
+
+[SAM OpenCode 0.2.2](https://github.com/zmaxb/sam-opencode/releases/tag/sam-opencode-v0.2.2) includes upstream OpenCode 2.3.0 and the SAM Plugin for Wire v3. Its release assets include the Linux x64 archive, distribution manifest, qualification evidence and SHA-256 checksums. Verify the published assets before installing the release. See the [0.2.2 changelog](../releases/0.2.2/CHANGELOG.md) for the qualified Agent Identity and Steering behavior.
+
 ## Build and verify
 
 From a clean tagged checkout on Linux x86-64, use Bun 1.4.4, Python 3.10+, GNU tar and gzip.
 
 ```sh
-./sam/build-release.sh /absolute/output-directory 0.2.0
+./sam/build-release.sh /absolute/output-directory 0.2.2
 cd /absolute/output-directory
 sha256sum -c SHA256SUMS
 ```
@@ -53,7 +57,7 @@ A native client can read `GET /api/session/{sessionID}/steering` to discover `ru
 
 Read `GET /api/session/{sessionID}/steering?messageID={id}` to recover the admission receipt. It includes the Session ID, steering message ID, original execution identity and SHA-256 of the accepted UTF-8 text. The receipt confirms admission. Consumption happens on a subsequent step of the same root if it continues. An exact repeat reads the original admission without adding work. Completion and Stop expire undelivered inputs. Receipts survive restart for the lifetime of the Session. The managed server expires stranded inputs during restart recovery. A plain server expires them when the affected Session next starts, before it consumes input. Ordinary unbound prompts use the existing API behavior.
 
-This native opt-in capability leaves the production SAM Plugin, Wire v3 and SAM Runtime capability advertisement unchanged. Qualify it against an isolated synthetic provider.
+The 0.2.2 Plugin advertises this capability under Wire v3 for ordinary managed Agent runs. SAM checks both the Plugin and native capability before enabling Steering for the original root. Use an isolated synthetic provider to verify delivery.
 
 ```sh
 python3 sam/qualification/steering/qualify.py "$SAM_TEST_OPENCODE_NATIVE_BINARY"
