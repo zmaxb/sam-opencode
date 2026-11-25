@@ -314,7 +314,11 @@ describe("subagent idle reports end to end", () => {
       yield* h.sessions.setMetadata({ sessionID, metadata: { sam: { subagentReportRelease } } })
       yield* h.llm.serve(script({
         reviewer: [TestLLM.text("Result", "child-answer")],
-        build: [TestLLM.text("User turn", "user-turn"), TestLLM.text("Received", "parent-answer")],
+        build: [
+          TestLLM.toolCall("bound-steering-shell", "shell", { command: "echo fixture", background: false }),
+          TestLLM.text("User turn", "user-turn"),
+          TestLLM.text("Received", "parent-answer"),
+        ],
       }))
       yield* h.call("call-held-report")
       const inbox = yield* h.sessions.inbox(sessionID).pipe(
@@ -331,8 +335,18 @@ describe("subagent idle reports end to end", () => {
       expect((yield* h.sessions.releaseSubagentReport(ref).pipe(Effect.result))._tag).toBe("Failure")
       expect((yield* h.sessions.cancelInbox(ref).pipe(Effect.result))._tag).toBe("Failure")
       expect(yield* h.sessions.inbox(sessionID)).toEqual(inbox)
-      yield* h.sessions.prompt({ sessionID, text: "Another request", delivery: "queue" })
+      const gate = yield* h.llm.gate()
+      const root = yield* h.sessions.prompt({ sessionID, text: "Another request", delivery: "queue" })
+      yield* gate.started
+      const expectedExecution = h.execution.steeringOwner?.(sessionID)
+      expect(expectedExecution?.rootMessageID).toBe(root.id)
+      if (!expectedExecution) throw new Error("Expected an active parent root")
+      const id = SessionMessage.ID.create()
+      yield* h.sessions.prompt({ sessionID, id, text: "Steer the parent only", expectedExecution })
+      yield* gate.release
       yield* h.sessions.wait(sessionID)
+      expect((yield* h.sessions.context(sessionID)).some((message) => message.id === id)).toBeTrue()
+      expect((yield* h.sessions.steeringState({ sessionID, messageID: id })).receipt?.execution).toEqual(expectedExecution)
       expect(yield* h.sessions.inbox(sessionID)).toEqual(inbox)
       expect(yield* deliveredReports(h, sessionID)).toEqual([])
 

@@ -13,7 +13,7 @@ SAM OpenCode tracks [OpenCode upstream](https://github.com/anomalyco/opencode) w
 From a clean tagged checkout on Linux x86-64, use Bun 1.4.4, Python 3.10+, GNU tar and gzip.
 
 ```sh
-./sam/build-release.sh /absolute/output-directory
+./sam/build-release.sh /absolute/output-directory 0.2.0
 cd /absolute/output-directory
 sha256sum -c SHA256SUMS
 ```
@@ -35,7 +35,7 @@ python3 sam/qualification/stage02/qualify.py "$SAM_TEST_OPENCODE_NATIVE_BINARY" 
 python3 sam/qualification/stage02/qualify.py "$SAM_TEST_OPENCODE_NATIVE_BINARY" "$SAM_PROVIDER_PROBE" --mode managed
 ```
 
-`SAM_PROVIDER_PROBE` is the executable built from the existing SAM `artifacts/opencode-background-jobs/stage02/fixture/ProviderProbe.csproj` fixture. Use a loopback synthetic provider, distinct XDG directories and disposable native and SAM storage.
+`SAM_PROVIDER_PROBE` is the DLL built from the existing SAM `artifacts/opencode-background-jobs/stage02/fixture/ProviderProbe.csproj` fixture. Use a loopback synthetic provider, distinct XDG directories and disposable native and SAM storage.
 
 ## Installation and update
 
@@ -58,4 +58,7 @@ This native opt-in capability leaves the production SAM Plugin, Wire v3 and SAM 
 ```sh
 python3 sam/qualification/steering/qualify.py "$SAM_TEST_OPENCODE_NATIVE_BINARY"
 python3 sam/qualification/steering/qualify.py "$SAM_TEST_OPENCODE_NATIVE_BINARY" --managed
+python3 sam/qualification/steering/closeout.py "$SAM_TEST_OPENCODE_NATIVE_BINARY"
 ```
+
+See the [release manifest](../releases/0.2.0/manifest.json) and [SAM integration handoff](../releases/0.2.0/SAM-INTEGRATION.md).

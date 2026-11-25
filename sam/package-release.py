@@ -2,13 +2,13 @@
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
-SPEC = ROOT / "releases/0.1.0/manifest.json"
 PLUGIN_PATH = Path("tools/opencode")
 ZEN_POLICY = Path("src/SAM.Runtime.Contracts/AiModels/OpenCodeZenModelRequests.json")
 NATIVE_BINARY = ROOT / "packages/cli/dist/cli-linux-x64/bin/opencode"
@@ -30,8 +30,13 @@ def main():
     out = Path(sys.argv[1]).resolve()
     if out.is_relative_to(ROOT) or git("status", "--porcelain"):
         raise SystemExit("Use a clean checkout and an output directory outside it.")
+    version = sys.argv[2]
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        raise SystemExit("Expected a distribution version such as 0.2.0.")
+    manifest = json.loads((ROOT / "releases" / version / "manifest.json").read_text())
+    if manifest["version"] != version:
+        raise SystemExit(f"Manifest version does not match {version}.")
     out.mkdir(parents=True, exist_ok=True)
-    manifest = json.loads(SPEC.read_text())
     name = f"sam-opencode-{manifest['version']}-linux-x64"
     epoch = git("show", "-s", "--format=%ct")
     manifest["source"] = {"commit": git("rev-parse", "HEAD"), "tree": git("rev-parse", "HEAD^{tree}")}

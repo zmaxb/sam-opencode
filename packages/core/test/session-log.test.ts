@@ -13,6 +13,8 @@ import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
 import { SessionProjector } from "@opencode/core/session/projector"
 import { SessionExecution } from "@opencode/core/session/execution"
+import { SessionInbox } from "@opencode/core/session/inbox"
+import { SessionMessage } from "@opencode/core/session/message"
 import { SessionStore } from "@opencode/core/session/store"
 import { SessionTable } from "@opencode/core/session/sql"
 import { testEffect } from "./lib/effect"
@@ -20,7 +22,14 @@ import { globalProjectNode } from "./lib/project"
 
 const it = testEffect(
   AppNodeBuilder.build(
-    LayerNode.group([Database.node, Bus.node, SessionProjector.node, SessionStore.node, Session.node]),
+    LayerNode.group([
+      Database.node,
+      Bus.node,
+      SessionProjector.node,
+      SessionStore.node,
+      SessionInbox.node,
+      Session.node,
+    ]),
     [
       Bus.node.replace(Bus.configured({ persist: true })),
       Project.node.replace(globalProjectNode),
@@ -90,6 +99,40 @@ describe("Session.log", () => {
         items.map((item): number | string | undefined => (Bus.isSynced(item) ? item.type : item.durable?.seq)),
       ).toEqual([3, 4, "log.synced"])
       expect(items.at(-1)).toEqual({ type: "log.synced", aggregateID: created.id, seq: Event.Seq.make(4) })
+    }),
+  )
+
+  it.effect("replays retained steering once when full event persistence is enabled", () =>
+    Effect.gen(function* () {
+      const db = (yield* Database.Service).db
+      const session = yield* Session.Service
+      const inbox = yield* SessionInbox.Service
+      const { id: sessionID } = yield* session.create({ location })
+      const messageID = SessionMessage.ID.create()
+      const execution = { rootMessageID: SessionMessage.ID.create(), ownerToken: "fixture-owner" }
+      const text = "qualify persisted steering"
+      const receipt = { sessionID, messageID, execution, digest: SessionInbox.textDigest(text) }
+      yield* inbox.admit({
+        sessionID,
+        id: messageID,
+        bound: true,
+        item: {
+          type: "user",
+          delivery: "steer",
+          payload: { text, metadata: { [SessionInbox.steeringKey]: receipt } },
+        },
+      })
+      yield* session.cancelInbox({ sessionID, inboxID: messageID })
+      expect((yield* SessionInbox.steeringReceipt(db, sessionID, messageID))?.receipt).toEqual(receipt)
+      const entries = Array.from(yield* Stream.runCollect(session.log({ sessionID })))
+      expect(entries.map((entry) => entry.type)).toEqual([
+        "session.created",
+        "session.inbox.enqueued",
+        "session.inbox.cancelled",
+        "log.synced",
+      ])
+      expect(entries[1]).toMatchObject({ data: { sessionID, inboxID: messageID }, durable: { seq: 1 } })
+      expect(entries.at(-1)).toEqual({ type: "log.synced", aggregateID: sessionID, seq: Event.Seq.make(2) })
     }),
   )
 
