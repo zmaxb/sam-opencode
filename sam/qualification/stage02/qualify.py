@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import runpy
+import shutil
 import subprocess
 import tempfile
 from urllib.parse import urlencode
@@ -35,6 +36,8 @@ def arguments_digest(args):
 class Suite(Lab):
     def __init__(self, binary, root, driver, managed=False):
         super().__init__(binary, root, False, ROOT / "tools/opencode/context", managed)
+        policy = ROOT / "src/SAM.Runtime.Contracts/AiModels/OpenCodeZenModelRequests.json"
+        shutil.copyfile(policy, root / "plugin/zen-model-requests.json")
         self.driver = driver
         self.proofs = {}
         self.key_path = root / "signer.pem"

@@ -12,7 +12,7 @@ import socket
 import subprocess
 import tempfile
 from threading import Event, Thread
-from time import sleep
+from time import monotonic, sleep
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -119,7 +119,7 @@ class Lab:
     def api(self, path, payload=None, method=None):
         request = self.request(path, payload, method)
         try:
-            with urlopen(request) as response:
+            with urlopen(request, timeout=15) as response:
                 body = response.read()
                 return json.loads(body) if body else {"http": response.status}
         except HTTPError as error:
@@ -132,7 +132,10 @@ class Lab:
                                    b64encode(f"opencode:{self.password}".encode()).decode()}, method=method)
 
     def until(self, condition):
+        deadline = monotonic() + 90
         while self.process.poll() is None:
+            if monotonic() >= deadline:
+                raise TimeoutError(f"Fixture condition did not settle, see {self.root / 'server.log'}")
             try:
                 result = condition()
                 if result:
