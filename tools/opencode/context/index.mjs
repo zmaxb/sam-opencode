@@ -4,6 +4,8 @@ import { background } from './background.mjs';
 import { processor, processorContract } from './processor.mjs';
 
 const contract = 'sam.opencode-wire/v3';
+const steeringContract = 'run-bound-steering/v1';
+const steeringMessage = /^msg_steer_[0-9a-f]{32}$/;
 const zenContextContract = 'sam.opencode-zen-context/v1';
 // Qualification data, not an open-ended provider/URL allow-list. Add models only after native qualification.
 const installedZenManifest = new URL('./zen-model-requests.json', import.meta.url);
@@ -466,7 +468,7 @@ export default {
                 const baseNativeTools = [...nativeTools.keys()].every(name => name === 'patch' || wrappedNativeTools.has(name));
                 return {
                     ...(processorTargets.length ? { processor: { contract: processorContract, targets: processorTargets } } : {}),
-                    contract, epoch, zenContext: zenContextContract, modelRequests: structuredClone(modelRequests),
+                    contract, epoch, steering: steeringContract, zenContext: zenContextContract, modelRequests: structuredClone(modelRequests),
                     backgroundJobs: jobs.qualification,
                     lateBackgroundResult: jobs.qualification ? 'opencode.background-result.v1' : null,
                     detachedCleanup: jobs.qualification && typeof ctx.session.remove === 'function' ? 'opencode.detached-session-cleanup.v1' : null,
@@ -723,6 +725,27 @@ export default {
         await ctx.session.hook('prompt', async event => {
             const session = await ctx.session.get({ sessionID: event.sessionID });
             const child = session.parentID ? await getChild(event.sessionID) : null;
+            if (event.expectedExecution && (session.metadata?.sam || child)) {
+                const expected = session.metadata?.sam;
+                const run = runs.get(event.sessionID);
+                const authority = event.metadata?.samSteering;
+                if (session.parentID || !run?.admitted || run.closed || !expected?.continuity ||
+                    expected.reportChildId !== undefined || expected.lateBackgroundNotificationId !== undefined ||
+                    expected.epoch !== epoch || canonical(run.expected) !== canonical(expected) ||
+                    !matchesModel(expected, session.model) || event.delivery !== 'steer' ||
+                    event.expectedExecution.rootMessageID !== expected.inputId ||
+                    !steeringMessage.test(event.messageID) || event.messageID !== 'msg_steer_' + authority?.operation ||
+                    authority?.epoch !== epoch || authority.inputId !== expected.inputId ||
+                    event.prompt.files?.length || event.prompt.agents?.length || event.prompt.skills?.length) {
+                    // Native admission rejects a bound prompt whose hook changes delivery.
+                    // A refused request can never enter the ordinary queue.
+                    event.delivery = 'queue';
+                    return;
+                }
+                verifyPermissions(run, session);
+                event.metadata = undefined;
+                return;
+            }
             if (child) {
                 if (child.parent !== session.parentID || child.root.epoch !== epoch || child.inputId !== undefined ||
                     sha256(event.prompt.text) !== child.promptDigest || event.prompt.files?.length)
@@ -911,13 +934,22 @@ export default {
                     const continuations = [];
                     for (const message of suffix) {
                         const index = transcript.findIndex(item => item.id === message.id);
-                        const background = index > previousContinuation &&
-                            await jobs.continuation(run.sessionId, run.expected, transcript[index], run.tools);
-                        if (index <= previousContinuation || textOf(message) !== transcript[index].text ||
-                            !isLengthContinuation(transcript, index) && !background)
-                            reject('unconfirmed synthetic continuation');
+                        const native = transcript[index];
+                        if (index <= previousContinuation || typeof native?.text !== 'string' || textOf(message) !== native.text)
+                            reject('unconfirmed continuation');
+                        const digest = sha256(native.text);
+                        const binding = native.metadata?.opencodeBoundSteering;
+                        const steering = native.type === 'user' && steeringMessage.test(native.id) &&
+                            binding?.sessionID === run.sessionId && binding.messageID === native.id &&
+                            binding.execution?.rootMessageID === run.expected.inputId &&
+                            typeof binding.execution.ownerToken === 'string' && binding.execution.ownerToken.length > 0 &&
+                            binding.digest === digest;
+                        const background = !steering &&
+                            await jobs.continuation(run.sessionId, run.expected, native, run.tools);
+                        if (!steering && !background && !isLengthContinuation(transcript, index))
+                            reject('unconfirmed continuation');
                         previousContinuation = index;
-                        continuations.push({ id: message.id, digest: sha256(transcript[index].text), background });
+                        continuations.push({ id: message.id, digest, background });
                     }
                     run.continuations = continuations;
                     for (const [id, attempt] of missing) {
