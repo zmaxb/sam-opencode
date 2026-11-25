@@ -2,7 +2,7 @@ import { Shell } from "@opencode/schema/shell"
 import { Location } from "@opencode/schema/location"
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api"
-import { ShellNotFoundError } from "../errors.js"
+import { ConflictError, ShellNotFoundError } from "../errors.js"
 import { LocationQuery, locationQueryOpenApi } from "./location.js"
 
 export const ShellGroup = HttpApiGroup.make("server.shell")
@@ -73,6 +73,7 @@ export const ShellGroup = HttpApiGroup.make("server.shell")
       params: { id: Shell.ID },
       query: LocationQuery,
       success: HttpApiSchema.NoContent,
+      error: ConflictError,
     })
       .annotateMerge(locationQueryOpenApi)
       .annotateMerge(

@@ -60,6 +60,9 @@ export const ToolCall = Schema.Struct({
   sessionID: Schema.String,
   assistantMessageID: Schema.String,
   callID: Schema.String,
+  inputID: Schema.optionalKey(Schema.String),
+  operation: Schema.optionalKey(Schema.String),
+  argumentsDigest: Schema.optionalKey(Schema.String),
 })
 export type ToolCall = typeof ToolCall.Type
 
@@ -169,6 +172,10 @@ export interface Interface {
   // once; `wait` observes the exit. Ignored once the command has ended or is already stopping.
   readonly stop: (id: Shell.ID, reason: StopReason) => Effect.Effect<Shell.Info, NotFoundError>
   // The daemon command a tool call started, while it is known here (including one taken back after a restart).
+  readonly attribution: (id: Shell.ID) => Effect.Effect<ToolCall | undefined>
+  readonly outputBytes: (id: Shell.ID, input: Shell.OutputInput) => Effect.Effect<{
+    base64: string; cursor: number; size: number; complete: boolean
+  }, NotFoundError>
   readonly byToolCall: (call: ToolCall) => Effect.Effect<Shell.Info | undefined>
   readonly output: (id: Shell.ID, input?: Shell.OutputInput) => Effect.Effect<Shell.Output, NotFoundError>
   readonly remove: (id: Shell.ID) => Effect.Effect<void, NotFoundError>
@@ -702,6 +709,8 @@ const layer = () =>
         return command.info
       })
 
+      const attribution = (id: Shell.ID) => Effect.sync(() => runs?.get(id)?.toolCall)
+
       const byToolCall = Effect.fn("Shell.byToolCall")(function* (call: ToolCall) {
         return runs
           ?.list()
@@ -757,6 +766,18 @@ const layer = () =>
           size,
           truncated: false,
         }
+      })
+
+      const outputBytes = Effect.fn("Shell.outputBytes")(function* (id: Shell.ID, input: Shell.OutputInput) {
+        const command = yield* require(id)
+        const file = command.info.file
+        const size = yield* Effect.promise(() => stat(file).then((value) => value.size, () => undefined))
+        if (size === undefined) return yield* new NotFoundError({ id })
+        const start = Math.min(input.cursor ?? 0, size)
+        const bytes = yield* readRange(file, start, Math.min(input.limit ?? 65536, size - start))
+        const complete = command.kind === "daemon" && !command.outputError && !command.killed &&
+          command.info.status !== "running" && start + bytes.length === Math.min(size, start + (input.limit ?? 65536))
+        return { base64: bytes.toString("base64"), cursor: start + bytes.length, size, complete }
       })
 
       // Only for a command whose exit report is missing (still running, or lost with the daemon); the daemon counts
@@ -1115,6 +1136,8 @@ const layer = () =>
         stop,
         byToolCall,
         output,
+        outputBytes,
+        attribution,
         remove,
         watch: daemon.watch,
         handoffPrepared: daemon.handoffPrepared,

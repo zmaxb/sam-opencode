@@ -29,6 +29,7 @@ import { SessionSchema } from "./schema.js"
 import { SessionStored } from "./stored.js"
 import { SessionInboxTable, SessionMessageTable, SessionTable } from "./sql.js"
 import { SessionHistory } from "./history.js"
+import { ShellReport } from "./shell-report.js"
 import { SubagentCompletion } from "./subagent-completion.js"
 
 type DatabaseService = Database.Interface["db"]
@@ -70,17 +71,21 @@ const encodeMove = Schema.encodeSync(MovePayload)
 const inboxLocks = KeyedMutex.makeUnsafe<SessionSchema.ID>()
 type PendingRef = { readonly id: SessionMessage.ID; readonly sessionID: SessionSchema.ID }
 
-const controlledReport = sql`(${SessionInboxTable.type} = 'synthetic' and coalesce(
+const controlledSubagent = sql`(${SessionInboxTable.type} = 'synthetic' and coalesce(
   json_extract(${SessionInboxTable.payload}, ${"$.metadata." + SubagentCompletion.controlledKey}), 0) = 1)`
+const shellProof = "$.metadata." + ShellReport.key
+const controlledShell = sql`(${SessionInboxTable.type} = 'synthetic' and coalesce(
+  json_extract(${SessionInboxTable.payload}, ${shellProof + ".held"}), 0) = 1)`
+const controlledReport = or(controlledSubagent, controlledShell)
 const ordinaryQueue = and(eq(SessionInboxTable.delivery, "queue"), not(controlledReport))
-const eligibleSteer = and(eq(SessionInboxTable.delivery, "steer"), or(not(controlledReport), sql`exists (
+const eligibleSteer = and(eq(SessionInboxTable.delivery, "steer"), or(not(controlledSubagent), sql`exists (
   select 1 from ${SessionTable}
   where ${SessionTable.id} = ${SessionInboxTable.session_id}
     and json_extract(${SessionTable.metadata}, '$.sam.subagentReportRelease') = ${SubagentCompletion.releaseContract}
-    and json_extract(${SessionTable.metadata}, '$.sam.inputId') = ${SessionInboxTable.id}
-    and json_type(${SessionTable.metadata}, '$.sam.operation') = 'text'
     and json_extract(${SessionTable.metadata}, '$.sam.inputDigest') =
       json_extract(${SessionInboxTable.payload}, ${"$.metadata." + SubagentCompletion.provenanceKey + ".sha256"})
+    and json_extract(${SessionTable.metadata}, '$.sam.inputId') = ${SessionInboxTable.id}
+    and json_type(${SessionTable.metadata}, '$.sam.operation') = 'text'
 )`))
 
 export const serialized = <A, E, R>(sessionID: SessionSchema.ID, effect: Effect.Effect<A, E, R>) =>
@@ -276,16 +281,23 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
   const steer = Effect.fn("SessionInbox.steer")(function* (
     input: PendingRef,
     getSession?: Effect.Effect<SessionSchema.Info | undefined>,
+    shellGrant?: ShellReport.Release,
   ) {
     return yield* serialized(input.sessionID, Effect.gen(function* () {
       const pending = yield* find(db, input.id)
       const item = pending ?? (yield* promotedFromMessage(db, input.sessionID, input.id, "steer"))
-      const controlled = item?.type === "synthetic" && item.payload.metadata?.[SubagentCompletion.controlledKey] === true
-      if (controlled !== (getSession !== undefined)) return yield* new LifecycleConflict({ id: input.id })
-      if (controlled && getSession) {
+      const metadata = item?.type === "synthetic" ? item.payload.metadata : undefined
+      const shell = metadata?.[ShellReport.key]
+      const shellHeld = shell && typeof shell === "object" && "held" in shell && shell.held === true
+      const subagentHeld = metadata?.[SubagentCompletion.controlledKey] === true
+      if (Boolean(shellHeld || subagentHeld) !== (getSession !== undefined))
+        return yield* new LifecycleConflict({ id: input.id })
+      if (getSession && item) {
         const session = yield* getSession
-        if (item.sessionID !== input.sessionID || !session || session.revert ||
-            !SubagentCompletion.authorizesRelease(session, item.id, item.payload.metadata))
+        const authorized = session && (shellGrant
+          ? shellHeld && ShellReport.matchesRelease(shellGrant, item.id, metadata)
+          : subagentHeld && SubagentCompletion.authorizesRelease(session, item.id, metadata))
+        if (item.sessionID !== input.sessionID || !session || session.revert || !authorized)
           return yield* new LifecycleConflict({ id: input.id })
         if (!pending) return false
         if (pending.delivery === "steer") return true

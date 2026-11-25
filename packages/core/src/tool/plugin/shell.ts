@@ -4,7 +4,7 @@ import { ToolFailure } from "@opencode/ai/effect"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
 import type { ShellCreateBefore } from "@opencode/plugin/effect/shell"
-import type { Shell as ShellSchema } from "@opencode/schema/shell"
+import { Shell as ShellSchema } from "@opencode/schema/shell"
 import type { Tool } from "@opencode/schema/tool"
 import { Clock, Deferred, Effect, Fiber, Option, Schema, Struct } from "effect"
 import { Environment } from "../../environment/index.js"
@@ -15,6 +15,7 @@ import { Permission } from "../../permission.js"
 import { NonNegativeInt } from "../../schema.js"
 import { Session } from "../../session.js"
 import { SessionMessage } from "../../session/message.js"
+import { ShellReport } from "../../session/shell-report.js"
 import { SessionSchema } from "../../session/schema.js"
 import { Shell } from "../../shell.js"
 import { ShellParse } from "../../shell/parse.js"
@@ -142,7 +143,10 @@ const backgroundResult = (info: ShellSchema.Info, now: number, timeout?: number)
 const notify = Effect.fnUntraced(function* (
   sessions: Pick<Session.Interface, "synthetic">,
   jobs: Job.Interface,
+  shell: Shell.Interface,
   input: {
+    readonly origin?: Shell.ToolCall
+    readonly controlled?: boolean
     readonly sessionID: SessionSchema.ID
     readonly id: string
     readonly shellID: string
@@ -154,20 +158,27 @@ const notify = Effect.fnUntraced(function* (
   if (!info || info.status === "running") return
   const output = info.status === "completed" ? yield* Deferred.await(input.settled) : undefined
   const text = output ? (info.output ?? "") : info.status === "error" ? (info.error ?? "Command failed") : "Cancelled"
+  const terminal = ShellReport.terminal(yield* shell.get(Schema.decodeUnknownSync(
+    ShellSchema.ID)(input.shellID)).pipe(Effect.catchTag("Shell.NotFoundError", () => Effect.succeed(undefined))))
+  const notice = ShellResult.notification({
+    jobID: input.id,
+    shellID: input.shellID,
+    command: input.command,
+    state: info.status,
+    text,
+    output,
+  })
   // A session deleted while its command ran has no one left to tell.
   yield* sessions
     .synthetic({
       ...(info.notificationID ? { id: info.notificationID } : {}),
       sessionID: input.sessionID,
       description: input.command,
-      ...ShellResult.notification({
-        jobID: input.id,
-        shellID: input.shellID,
-        command: input.command,
-        state: info.status,
-        text,
-        output,
-      }),
+      ...notice,
+      metadata: {
+        ...notice.metadata,
+        [ShellReport.key]: { origin: input.origin, controlled: input.controlled, commandDigest: ShellReport.digest(input.command), terminal },
+      },
     })
     .pipe(Effect.catchTag("Session.NotFoundError", () => Effect.void))
   if (info.notificationID) yield* jobs.completeBackground(info.notificationID)
@@ -180,6 +191,8 @@ const startJob = Effect.fnUntraced(function* (
   input: {
     readonly sessionID: SessionSchema.ID
     readonly info: ShellSchema.Info
+    readonly origin?: Shell.ToolCall
+    readonly controlled?: boolean
     readonly background?: boolean
     readonly notificationID?: SessionMessage.ID
     readonly timeout?: () => number
@@ -198,6 +211,8 @@ const startJob = Effect.fnUntraced(function* (
       sessionID: input.sessionID,
       shellID: info.id,
       command: info.command,
+      ...(input.origin ? { origin: input.origin } : {}),
+      ...(input.controlled ? { controlled: true } : {}),
     },
     ...(input.notificationID ? { notificationID: input.notificationID } : {}),
     background: input.background,
@@ -255,11 +270,15 @@ export const reattach = Effect.fnUntraced(function* (input: {
   readonly sessions: Pick<Session.Interface, "synthetic">
   readonly sessionID: SessionSchema.ID
   readonly info: ShellSchema.Info
+  readonly origin?: Shell.ToolCall
+  readonly controlled?: boolean
   // The job's existing durable row, if the previous server had backgrounded it.
   readonly notificationID?: SessionMessage.ID
 }) {
   const { job, settled } = yield* startJob(input.jobs, input.shell, { ...input, background: true })
-  const notifying = notify(input.sessions, input.jobs, {
+  const notifying = notify(input.sessions, input.jobs, input.shell, {
+    origin: input.origin,
+    controlled: input.controlled,
     sessionID: input.sessionID,
     id: job.id,
     shellID: input.info.id,
@@ -322,12 +341,13 @@ export const Plugin = {
     // Not in this Location's scope: a daemon command outlives a Location that closes while the server runs, and
     // its session must still hear how it ended.
     const notifyWhenDone = (
-      sessionID: SessionSchema.ID,
+      origin: Shell.ToolCall,
+      controlled: boolean,
       id: string,
       shellID: string,
       command: string,
       settled: Deferred.Deferred<Output>,
-    ) => shell.watch(notify(sessions, jobs, { sessionID, id, shellID, command, settled }))
+    ) => shell.watch(notify(sessions, jobs, shell, { sessionID: SessionSchema.ID.make(origin.sessionID), origin, controlled, id, shellID, command, settled }))
 
     // Stops the command of a call the user asked to stop, and fails the call with the output so far. The command
     // stays observable, output file included.
@@ -380,19 +400,26 @@ export const Plugin = {
                     )
                   : undefined
                 return yield* Effect.gen(function* () {
+                  const session = yield* sessions.get(context.sessionID).pipe(
+                    Effect.catchTag("Session.NotFoundError", () => Effect.succeed(undefined)),
+                  )
+                  const controlled = ShellReport.controls(session?.metadata)
+                  const contextBinding = controlled ? ShellReport.binding(session?.metadata, input) : undefined
+                  const origin = {
+                    sessionID: context.sessionID,
+                    assistantMessageID: context.messageID,
+                    callID: context.id,
+                    ...contextBinding,
+                  }
                   const info = yield* shell.create(
                     {
                       command: input.command,
                       cwd: input.workdir,
                       timeout,
                       shell: yield* compatibleShell,
-                      metadata: { sessionID: context.sessionID },
+                      metadata: { sessionID: context.sessionID, ...(controlled ? { [ShellReport.shellMarker]: true } : {}) },
                       waited: input.background !== true,
-                      toolCall: {
-                        sessionID: context.sessionID,
-                        assistantMessageID: context.messageID,
-                        callID: context.id,
-                      },
+                      toolCall: origin,
                     },
                     (invocation) =>
                       Effect.gen(function* () {
@@ -422,6 +449,8 @@ export const Plugin = {
                   const { job, settled } = yield* startJob(jobs, shell, {
                     sessionID: context.sessionID,
                     info,
+                    origin,
+                    controlled,
                     timeout: () => finalTimeout,
                   })
                   // Stopped while the command was starting: stop it now.
@@ -429,7 +458,7 @@ export const Plugin = {
 
                   if (input.background === true) {
                     yield* jobs.background(job.id)
-                    yield* notifyWhenDone(context.sessionID, job.id, info.id, info.command, settled)
+                    yield* notifyWhenDone(origin, controlled, job.id, info.id, info.command, settled)
                     return backgroundResult(info, yield* Clock.currentTimeMillis)
                   }
 
@@ -470,7 +499,7 @@ export const Plugin = {
                     yield* shell.timeout(info.id, 0)
                     const elapsed = "timedOut" in result ? finalTimeout : undefined
                     finalTimeout = 0
-                    yield* notifyWhenDone(context.sessionID, job.id, info.id, info.command, settled)
+                    yield* notifyWhenDone(origin, controlled, job.id, info.id, info.command, settled)
                     return backgroundResult(info, yield* Clock.currentTimeMillis, elapsed)
                   }
                   if (result?.info.status === "error")

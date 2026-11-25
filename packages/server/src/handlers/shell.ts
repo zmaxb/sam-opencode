@@ -1,8 +1,9 @@
+import { ShellReport } from "@opencode/core/session/shell-report"
 import { Shell } from "@opencode/core/shell"
 import { Location } from "@opencode/core/location"
 import { Effect } from "effect"
 import { HttpApiBuilder, HttpApiSchema } from "effect/http-api"
-import { ShellNotFoundError } from "@opencode/protocol/errors"
+import { ConflictError, ShellNotFoundError } from "@opencode/protocol/errors"
 import { Api } from "../api"
 import { response } from "../location"
 
@@ -64,6 +65,11 @@ export const ShellHandler = HttpApiBuilder.group(Api, "server.shell", (handlers)
         "shell.remove",
         Effect.fn(function* (ctx) {
           const shell = yield* Shell.Service
+          const current = yield* shell.get(ctx.params.id).pipe(
+            Effect.catchTag("Shell.NotFoundError", () => Effect.succeed(undefined)),
+          )
+          if (current?.metadata[ShellReport.shellMarker] === true)
+            return yield* new ConflictError({ message: "Controlled Shell requires scoped Stop", resource: ctx.params.id })
           yield* shell.remove(ctx.params.id).pipe(Effect.catchTag("Shell.NotFoundError", () => Effect.void))
           return HttpApiSchema.NoContent.make()
         }),

@@ -666,6 +666,14 @@ export function fromPromise(plugin: Plugin) {
             },
           },
           shell: {
+            background: host.shell.background && {
+              ...host.shell.background,
+              read: (...args) => run(host.shell.background!.read(...args)),
+              output: (...args) => run(host.shell.background!.output(...args)),
+              reports: (...args) => run(host.shell.background!.reports(...args)),
+              release: (...args) => run(host.shell.background!.release(...args)),
+              stop: (...args) => run(host.shell.background!.stop(...args)),
+            },
             hook: (name, callback) =>
               register(host.shell.hook(name, (event) => Effect.promise(() => Promise.resolve(callback(event))))),
           },

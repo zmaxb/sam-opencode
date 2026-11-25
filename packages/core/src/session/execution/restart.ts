@@ -17,6 +17,7 @@ import { SessionHistory } from "../history.js"
 import { SessionSchema } from "../schema.js"
 import { SessionStore } from "../store.js"
 import { ImageNotice } from "../../image/notice.js"
+import { ShellReport } from "../shell-report.js"
 import { ShellResult } from "../../shell/result.js"
 import { SubagentCompletion } from "../subagent-completion.js"
 import { SubagentJob } from "../subagent-job.js"
@@ -127,15 +128,22 @@ export const layer = (options?: Options) =>
                 : state === "error"
                   ? (background.error ?? "Command failed")
                   : "Command cancelled"
-          return {
-            description: recovery.command,
-            ...ShellResult.notification({
+          const notice = ShellResult.notification({
               jobID: background.id,
               shellID: recovery.shellID,
               command: recovery.command,
               state,
               text,
-            }),
+            })
+          return {
+            ...notice,
+            description: recovery.command,
+            metadata: {
+              ...notice.metadata,
+              [ShellReport.key]: {
+                origin: recovery.origin, controlled: recovery.controlled, commandDigest: ShellReport.digest(recovery.command),
+              },
+            },
           }
         }
         const body =
@@ -232,6 +240,8 @@ export const layer = (options?: Options) =>
           sessions: notices,
           sessionID: recovery.sessionID,
           info: info.value,
+          origin: recovery.origin,
+          controlled: recovery.controlled,
           notificationID: background.notificationID,
         })
       })
@@ -404,8 +414,10 @@ export const layer = (options?: Options) =>
           const notices: Notices = {
             synthetic: (input) =>
               sessions.synthetic({ ...input, resume: false }).pipe(
-                Effect.tap(() => {
-                  if (input.metadata?.[SubagentCompletion.controlledKey] === true) return Effect.void
+                Effect.tap((notice) => {
+                  if (input.metadata?.[SubagentCompletion.controlledKey] === true ||
+                    notice.payload.metadata?.[ShellReport.key] !== undefined && notice.delivery === "queue")
+                    return Effect.void
                   if (suspended.has(input.sessionID)) return Effect.void
                   if (!state.defer) return wake(input.sessionID)
                   wakes.add(input.sessionID)

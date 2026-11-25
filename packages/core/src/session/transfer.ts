@@ -24,6 +24,7 @@ import { SessionEvent } from "./event.js"
 import { SessionMessage } from "./message.js"
 import { SessionProjector } from "./projector.js"
 import { SessionMessageTable, SessionTable } from "./sql.js"
+import { ShellReport } from "./shell-report.js"
 import { SubagentCompletion } from "./subagent-completion.js"
 
 export const Data = SessionTransfer.Data
@@ -86,7 +87,7 @@ const layer = Layer.effect(
           // Import is a caller-provided transcript, not a native completion.
           const encoded = encodeMessage(
             message.type === "synthetic"
-              ? { ...message, metadata: SubagentCompletion.withoutProvenance(message.metadata) }
+              ? { ...message, metadata: ShellReport.withoutProof(SubagentCompletion.withoutProvenance(message.metadata)) }
               : message,
           )
           const { id: _, type, ...data } = encoded

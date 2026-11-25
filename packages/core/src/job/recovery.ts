@@ -1,3 +1,4 @@
+import { Shell } from "../shell.js"
 import { Schema } from "effect"
 import { SessionSchema } from "../session/schema.js"
 
@@ -7,6 +8,8 @@ export const RecoverySchema = Schema.Union([
     sessionID: SessionSchema.ID,
     shellID: Schema.String,
     command: Schema.String,
+    origin: Schema.optionalKey(Shell.ToolCall),
+    controlled: Schema.optionalKey(Schema.Boolean),
   }),
   Schema.Struct({
     kind: Schema.Literal("subagent"),

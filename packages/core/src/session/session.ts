@@ -21,6 +21,7 @@ import {
 } from "./error.js"
 import { SessionEvent } from "./event.js"
 import { SessionExecution } from "./execution.js"
+import { ShellReport } from "./shell-report.js"
 import { SessionInbox } from "./inbox.js"
 import { SessionMessage } from "./message.js"
 import { SessionPrompt } from "./prompt.js"
@@ -154,6 +155,15 @@ export const make = Effect.fn("Session.make")(function* () {
     inboxID: SessionMessage.ID,
   ) {
     const wake = yield* mutatePending(sessionID, inboxID, (input) => admission.steer(input, store.get(sessionID)))
+    if (wake) yield* execution.wake(sessionID)
+  }, Effect.uninterruptible)
+  const releaseShellReport = Effect.fn("Session.releaseShellReport")(function* (
+    sessionID: SessionSchema.ID,
+    inboxID: SessionMessage.ID,
+    grant: ShellReport.Release,
+  ) {
+    const wake = yield* mutatePending(sessionID, inboxID, (input) =>
+      admission.steer(input, store.get(sessionID), grant))
     if (wake) yield* execution.wake(sessionID)
   }, Effect.uninterruptible)
   const queueInbox = Effect.fn("Session.queueInbox")(
@@ -305,16 +315,20 @@ export const make = Effect.fn("Session.make")(function* () {
     ) =>
       Effect.uninterruptible(
         Effect.gen(function* () {
-          yield* get(sessionID)
+          const session = yield* get(sessionID)
           const inputID = input.id ?? SessionMessage.ID.create()
+          const control = input.metadata?.source === "shell" &&
+            (ShellReport.controls(session.metadata) || ShellReport.wasControlled(input.metadata))
           const admittedInput = {
             type: "synthetic",
             payload: SessionInbox.SyntheticPayload.make({
               text: input.text,
               description: input.description,
-              metadata: input.metadata,
+              metadata: control && input.metadata
+                ? ShellReport.hold(input.metadata, sessionID, inputID, input.text)
+                : ShellReport.withoutProof(input.metadata),
             }),
-            delivery: input.delivery ?? "steer",
+            delivery: control ? "queue" : input.delivery ?? "steer",
           } satisfies SessionInbox.Item
           const admitted = yield* admission
             .admit({
@@ -328,7 +342,7 @@ export const make = Effect.fn("Session.make")(function* () {
                 () => new SyntheticConflictError({ sessionID, inputID }),
               ),
             )
-          if (input.resume !== false && admitted.payload.metadata?.[SubagentCompletion.controlledKey] !== true &&
+          if (!control && input.resume !== false && admitted.payload.metadata?.[SubagentCompletion.controlledKey] !== true &&
               !(yield* get(sessionID)).revert) yield* execution.wake(sessionID)
           return admitted
         }),
@@ -388,6 +402,7 @@ export const make = Effect.fn("Session.make")(function* () {
     cancelInbox,
     steerInbox,
     releaseSubagentReport,
+    releaseShellReport,
     queueInbox,
     revert,
   }
@@ -415,6 +430,7 @@ export const make = Effect.fn("Session.make")(function* () {
     const cancelInbox = operations.cancelInbox.bind(undefined, sessionID)
     const steerInbox = operations.steerInbox.bind(undefined, sessionID)
     const releaseSubagentReport = operations.releaseSubagentReport.bind(undefined, sessionID)
+    const releaseShellReport = operations.releaseShellReport.bind(undefined, sessionID)
     const queueInbox = operations.queueInbox.bind(undefined, sessionID)
     const stage = operations.revert.stage.bind(undefined, sessionID)
     const clear = operations.revert.clear.bind(undefined, sessionID)
@@ -445,6 +461,7 @@ export const make = Effect.fn("Session.make")(function* () {
       cancelInbox,
       steerInbox,
     releaseSubagentReport,
+    releaseShellReport,
       queueInbox,
       revert,
     }

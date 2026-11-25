@@ -19,6 +19,7 @@ import { Database } from "./database/database.js"
 import { SessionProjector } from "./session/projector.js"
 import { SessionMessageTable } from "./session/sql.js"
 import { SessionBlob } from "./session/blob.js"
+import type { ShellReport } from "./session/shell-report.js"
 import { SessionSchema } from "./session/schema.js"
 import { RelativePath } from "./schema.js"
 import { Agent } from "@opencode/schema/agent"
@@ -183,6 +184,7 @@ export interface Interface {
   readonly cancelInbox: (input: InboxItemRef) => Effect.Effect<void, NotFoundError | InboxConflictError>
   readonly steerInbox: (input: InboxItemRef) => Effect.Effect<void, NotFoundError | InboxConflictError>
   readonly releaseSubagentReport: (input: InboxItemRef) => Effect.Effect<void, NotFoundError | InboxConflictError>
+  readonly releaseShellReport: (input: InboxItemRef, grant: ShellReport.Release) => Effect.Effect<void, NotFoundError | InboxConflictError>
   readonly queueInbox: (input: InboxItemRef) => Effect.Effect<void, NotFoundError | InboxConflictError>
   /**
    * Durable, ordered session log read. Replays durable session bus after
@@ -481,6 +483,7 @@ const layer = Layer.effect(
       }),
       cancelInbox: (input) => sessions.forSession(input.sessionID).cancelInbox(input.inboxID),
       steerInbox: (input) => sessions.forSession(input.sessionID).steerInbox(input.inboxID),
+      releaseShellReport: (input, grant) => sessions.forSession(input.sessionID).releaseShellReport(input.inboxID, grant),
       releaseSubagentReport: (input) => sessions.forSession(input.sessionID).releaseSubagentReport(input.inboxID),
       queueInbox: (input) => sessions.forSession(input.sessionID).queueInbox(input.inboxID),
       log: (input) =>

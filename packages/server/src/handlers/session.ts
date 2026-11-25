@@ -1,12 +1,14 @@
+import { Job } from "@opencode/core/job"
 import { Instance } from "@opencode/core/instance/service"
 import { Session } from "@opencode/core/session"
 import { SessionStats } from "@opencode/core/session/stats"
+import { ShellReport } from "@opencode/core/session/shell-report"
 import { SubagentCompletion } from "@opencode/core/session/subagent-completion"
 import { SessionTitle } from "@opencode/core/session/title"
 import { SessionTransfer } from "@opencode/core/session/transfer"
 import { InstructionEntry } from "@opencode/core/session/instruction-entry"
 import { Form } from "@opencode/core/form"
-import { DateTime, Effect, Stream } from "effect"
+import { DateTime, Effect, Option, Stream } from "effect"
 import { HttpServerResponse } from "effect/http"
 import { HttpApiBuilder, HttpApiSchema } from "effect/http-api"
 import { SessionMediaMessageResponse } from "@opencode/protocol/groups/message"
@@ -38,6 +40,7 @@ function missingForm(id: Form.ID) {
 export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handlers) =>
   Effect.gen(function* () {
     const session = yield* Session.Service
+    const jobs = yield* Job.Service
     const transfer = yield* SessionTransfer.Service
     const instructions = yield* InstructionEntry.Service
     const instances = yield* Instance.Service
@@ -186,6 +189,24 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
       .handle(
         "session.remove",
         Effect.fn(function* (ctx) {
+          const sessionID = ctx.params.sessionID
+          const owner = yield* session.get(sessionID).pipe(Effect.catchTag("Session.NotFoundError", missingSession))
+          const protectedRows = (yield* jobs.pendingBackground).filter(
+            (row) => row.recovery.kind === "shell" && row.recovery.controlled === true,
+          )
+          const protects = Effect.fnUntraced(function* (id: Session.ID) {
+            let current = yield* session.get(id).pipe(Effect.option, Effect.map(Option.getOrUndefined))
+            while (current) {
+              if (current.id === sessionID) return true
+              if (current.parentID === undefined) return false
+              current = yield* session.get(current.parentID).pipe(Effect.option, Effect.map(Option.getOrUndefined))
+            }
+            return false
+          })
+          const protectedOwners = yield* Effect.forEach(protectedRows, (row) =>
+            row.recovery.kind === "shell" ? protects(row.recovery.sessionID) : Effect.succeed(false))
+          if (ShellReport.controls(owner.metadata) || protectedOwners.some(Boolean))
+            return yield* new ConflictError({ message: "Controlled shell Session requires authorized cleanup", resource: sessionID })
           yield* session.remove(ctx.params.sessionID).pipe(Effect.catchTag("Session.NotFoundError", missingSession))
           return HttpApiSchema.NoContent.make()
         }),
@@ -389,7 +410,7 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
               sessionID: ctx.params.sessionID,
               text: ctx.payload.text,
               description: ctx.payload.description,
-              metadata: SubagentCompletion.withoutProvenance(ctx.payload.metadata),
+              metadata: ShellReport.withoutProof(SubagentCompletion.withoutProvenance(ctx.payload.metadata)),
               delivery: ctx.payload.delivery,
               resume: ctx.payload.resume,
             })

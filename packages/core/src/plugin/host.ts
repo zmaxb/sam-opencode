@@ -15,11 +15,17 @@ import { Credential } from "../credential.js"
 import { Bus } from "../bus.js"
 import { Integration } from "../integration.js"
 import { IntegrationConnection } from "../integration/connection.js"
+import { Job } from "../job.js"
+import { Shell } from "../shell.js"
+import { Shell as NativeShell } from "@opencode/schema/shell"
+import { Session as SessionRef } from "@opencode/schema/session"
+import type { ShellAttribution } from "@opencode/plugin/shell-background"
 import { KV } from "../kv.js"
 import { Location } from "../location.js"
 import { LocationServiceMap } from "../location-service-map.js"
 import { Model } from "../model.js"
 import { Mcp } from "../mcp/index.js"
+import { ShellReport } from "../session/shell-report.js"
 import { Session } from "../session.js"
 import { InstructionEntry } from "../session/instruction-entry.js"
 import { PersistentPty } from "../persistent-pty.js"
@@ -74,6 +80,7 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
   const permission = yield* Permission.Service
   const hooks = yield* PluginHooks.Service
   const sessions = yield* Session.Service
+  const jobs = yield* Job.Service
   const instructionEntries = yield* InstructionEntry.Service
   const persistentPty = yield* PersistentPty.Service
   const locations = yield* LocationServiceMap.Service
@@ -102,6 +109,41 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
     Effect.gen(function* () {
       return { location: locationInfo(yield* Location.Service), data: yield* effect }
     }).pipe(Effect.provide(locations.get(ref)))
+
+  const inThisLocation = <A, E>(effect: Effect.Effect<A, E, Shell.Service>) =>
+    effect.pipe(Effect.provide(locations.get(Location.Ref.make({
+      directory: location.directory, workspaceID: location.workspaceID,
+    }))))
+  const checkShellSession = Effect.fnUntraced(function* (id: SessionRef.ID) {
+    const session = yield* sessions.get(id)
+    if (session.location.directory !== location.directory || session.location.workspaceID !== location.workspaceID)
+      return yield* Effect.fail(new Error("Background shell Session location changed"))
+  })
+  const readBackgroundShell = Effect.fnUntraced(function* (id: NativeShell.ID) {
+    const shell = yield* Shell.Service
+    const found = yield* shell.get(id).pipe(Effect.catchTag("Shell.NotFoundError", () => Effect.succeed(undefined)))
+    const matching = (yield* jobs.backgroundJobs).filter((entry) => entry.kind === "shell" && entry.id === id)
+    const job = matching[0]
+    const jobStatus = job?.status
+    const jobSessionID = job?.sessionID
+    const conflict = matching.length > 1 || job !== undefined && found !== undefined && jobSessionID !== found.metadata.sessionID
+    if (found?.metadata[ShellReport.shellMarker] !== true) return { jobStatus, jobSessionID, conflict }
+    const origin = yield* shell.attribution(id)
+    return { shell: found, origin, jobStatus, jobSessionID, conflict }
+  })
+  const stopBackgroundShell = Effect.fnUntraced(function* (grant: ShellAttribution) {
+    const id = Schema.decodeUnknownSync(NativeShell.ID)(grant.shellID)
+    yield* checkShellSession(Schema.decodeUnknownSync(SessionRef.ID)(grant.sessionID))
+    const current = yield* readBackgroundShell(id)
+    const shell = current.shell
+    if (current.conflict || !shell || !ShellReport.matchesOrigin(grant, current.origin) ||
+      shell.metadata.sessionID !== grant.sessionID || grant.jobID !== id ||
+      ShellReport.digest(shell.command) !== grant.commandDigest ||
+      (shell.status === "running" && current.jobStatus !== "running"))
+      return yield* Effect.fail(new Error("Background shell attribution unavailable"))
+    const service = yield* Shell.Service
+    return shell.status === "running" ? yield* service.stop(id, "killed") : shell
+  })
 
   const sessionPermission = (input: Parameters<Plugin.Context["permission"]["get"]>[0]) =>
     permission
@@ -497,6 +539,26 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
     },
     storage: storage(kv, pluginID),
     shell: {
+      background: {
+        contract: "sam.opencode-background-engine/v1",
+        directory: location.directory,
+        read: (id) => inThisLocation(readBackgroundShell(id)),
+        output: (id, input) => inThisLocation(Effect.flatMap(Shell.Service, (shell) => shell.outputBytes(id, input))),
+        reports: Effect.fnUntraced(function* (sessionID, id) {
+          yield* checkShellSession(sessionID)
+          const entries = (yield* sessions.inbox(sessionID)).filter(
+            (entry) => entry.type === "synthetic" && entry.payload.metadata?.[ShellReport.key] !== undefined,
+          )
+          const delivered = id === undefined ? undefined : yield* sessions.message({ sessionID, messageID: id })
+          return { entries, delivered }
+        }),
+        release: Effect.fnUntraced(function* (grant) {
+          const sessionID = Schema.decodeUnknownSync(SessionRef.ID)(grant.sessionID)
+          yield* checkShellSession(sessionID)
+          yield* sessions.releaseShellReport({ sessionID, inboxID: grant.notificationID }, grant)
+        }),
+        stop: (grant) => inThisLocation(stopBackgroundShell(grant)),
+      },
       hook: (name, callback) => hooks.register("shell", name, callback),
     },
     tool: {
@@ -600,7 +662,7 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
           yield* sessions.setPermissions({ sessionID: input.sessionID, permissions: input.permissions })
       }),
       move: sessions.move,
-      synthetic: sessions.synthetic,
+      synthetic: (input) => sessions.synthetic({ ...input, metadata: ShellReport.withoutProof(input.metadata) }),
       releaseSubagentReport: sessions.releaseSubagentReport,
       interrupt: (input) =>
         sessions
@@ -659,6 +721,7 @@ export const requirements = LayerNode.group([
   InstructionEntry.node,
   PersistentPty.node,
   LocationServiceMap.node,
+  Job.node,
 ])
 
 export function storage(kv: KV.Interface, pluginID: string): Plugin.Context["storage"] {
