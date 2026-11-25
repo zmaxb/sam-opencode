@@ -1,5 +1,7 @@
 export * as SessionExecution from "./execution.js"
 
+import { randomUUID } from "node:crypto"
+import type { ActiveExecution } from "@opencode/schema/session-inbox"
 import { Cause, Context, Effect, Exit, Layer } from "effect"
 import { Bus } from "../bus.js"
 import { Database } from "../database/database.js"
@@ -20,6 +22,7 @@ export interface Interface {
   readonly active: Effect.Effect<ReadonlySet<SessionSchema.ID>>
   /** Checks process-local ownership, including interruption cleanup and terminal settlement. */
   readonly isActive: (sessionID: SessionSchema.ID) => Effect.Effect<boolean>
+  readonly steeringOwner?: (sessionID: SessionSchema.ID) => ActiveExecution | undefined
   /** Starts execution while idle or joins the active execution. */
   readonly resume: (sessionID: SessionSchema.ID) => Effect.Effect<void, SessionRunner.RunError>
   /** Registers newly recorded work. Repeated wakeups may coalesce. */
@@ -61,6 +64,18 @@ export const layer = Layer.effect(
     const jobs = yield* Job.Service
     const inbox = yield* SessionInbox.Service
     const db = (yield* Database.Service).db
+    // Busy periods own fibers, while the runner opens a fresh token for each independent root.
+    const roots = new Map<SessionSchema.ID, { stopping: boolean; owner?: ActiveExecution }>()
+    const closeRoot = (sessionID: SessionSchema.ID) =>
+      SessionInbox.serialized(
+        sessionID,
+        Effect.gen(function* () {
+          const state = roots.get(sessionID)
+          const token = state?.owner?.ownerToken
+          if (state) state.owner = undefined
+          if (token) yield* SessionInbox.expireSteering(db, bus, sessionID, token)
+        }),
+      )
     const reportLifecycle = <A>(sessionID: SessionSchema.ID, effect: Effect.Effect<A>) =>
       effect.pipe(
         Effect.tapCause((cause) =>
@@ -106,6 +121,7 @@ export const layer = Layer.effect(
     ): Effect.fn.Return<void, SessionRunner.RunError> {
       const session = yield* store.get(sessionID)
       if (!session) return yield* Effect.die(new Error(`Session not found: ${sessionID}`))
+      const root = roots.get(sessionID)
       const result = yield* SessionRunner.Service.use((runner) =>
         runner.drain({
           sessionID,
@@ -114,6 +130,16 @@ export const layer = Layer.effect(
           promotable,
           stepped,
           interruption: () => interruption(sessionID),
+          steering:
+            root && !session.parentID
+              ? {
+                  owner: () => (root.stopping ? undefined : root.owner),
+                  open: (rootMessageID) => {
+                    if (!root.stopping) root.owner = { rootMessageID, ownerToken: randomUUID() }
+                  },
+                  close: closeRoot(sessionID),
+                }
+              : undefined,
         }),
       ).pipe(
         instances.provide(session),
@@ -134,6 +160,7 @@ export const layer = Layer.effect(
         reportLifecycle(
           sessionID,
           Effect.gen(function* () {
+            roots.set(sessionID, { stopping: false })
             // Bind before the started publication yields to SQLite so a cancel arriving during
             // that window still matches this generation.
             const before = yield* jobs.currentGeneration(sessionID)
@@ -143,6 +170,9 @@ export const layer = Layer.effect(
               startedSeq: event.durable.seq,
               boundGeneration: bound?.running ? bound.generation : undefined,
             })
+            // A plain server does not sweep suspended Sessions at boot. Clear
+            // steering left by a previous owner when this Session starts again.
+            yield* SessionInbox.serialized(sessionID, SessionInbox.expireSteering(db, bus, sessionID))
           }),
         ),
       drain: (sessionID, force, promotable) => drain(sessionID, force, undefined, promotable),
@@ -151,6 +181,8 @@ export const layer = Layer.effect(
         reportLifecycle(
           sessionID,
           Effect.gen(function* () {
+            yield* closeRoot(sessionID)
+            roots.delete(sessionID)
             const outcome = terminal(exit, reason)
             if (outcome.type === "interrupted" && outcome.reason === "shutdown") {
               subagentReport.clear(sessionID)
@@ -176,9 +208,20 @@ export const layer = Layer.effect(
     return Service.of({
       active: coordinator.active,
       isActive: coordinator.isActive,
+      steeringOwner: (sessionID) => {
+        const root = roots.get(sessionID)
+        return root?.stopping ? undefined : root?.owner
+      },
       interrupt: (sessionID, options) =>
         Effect.gen(function* () {
-          const interrupted = yield* coordinator.interrupt(sessionID, "user")
+          const interrupted = yield* SessionInbox.serialized(
+            sessionID,
+            Effect.gen(function* () {
+              const root = roots.get(sessionID)
+              if (root) root.stopping = true
+              return yield* coordinator.interrupt(sessionID, "user")
+            }),
+          )
           if (!options?.resume) return interrupted
           // Resume steering input and between-turn control work from the interrupted
           // intent. Queued next-turn prompts stay parked: a steer-scoped drain never

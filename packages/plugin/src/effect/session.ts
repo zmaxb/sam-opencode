@@ -14,6 +14,7 @@ import type { ModelHooks } from "./registration.js"
 export interface SessionPrompt {
   readonly sessionID: Session.ID
   readonly messageID: SessionMessage.ID
+  readonly expectedExecution?: SessionInbox.ActiveExecution
   prompt: Types.DeepMutable<PromptInput.Prompt>
   metadata?: Record<string, unknown>
   delivery: SessionInbox.Delivery
@@ -235,6 +236,9 @@ export type SessionDomain = Pick<
   | "context"
 > &
   Pick<ExperimentalSessionApi<unknown>, "wait" | "instructions"> & {
-    readonly releaseSubagentReport: (input: { sessionID: Session.ID; inboxID: SessionMessage.ID }) => Effect.Effect<void, unknown>
+    readonly releaseSubagentReport: (input: {
+      sessionID: Session.ID
+      inboxID: SessionMessage.ID
+    }) => Effect.Effect<void, unknown>
     readonly hook: ModelHooks<SessionHooks>
   }

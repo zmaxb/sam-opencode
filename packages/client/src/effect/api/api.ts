@@ -208,6 +208,19 @@ export type SessionMoveInput = {
 export type SessionMoveOutput = void
 export type SessionMoveOperation<E = never> = (input: SessionMoveInput) => Effect.Effect<SessionMoveOutput, E>
 
+export type SessionSteeringStateInput = {
+  readonly sessionID: Session.ID
+  readonly messageID?: SessionMessage.ID | undefined
+}
+export type SessionSteeringStateOutput = {
+  readonly capability: "run-bound-steering/v1"
+  readonly execution?: SessionInbox.ActiveExecution | undefined
+  readonly receipt?: SessionInbox.SteeringReceipt | undefined
+}
+export type SessionSteeringStateOperation<E = never> = (
+  input: SessionSteeringStateInput,
+) => Effect.Effect<SessionSteeringStateOutput, E>
+
 export type SessionPromptInput = {
   readonly sessionID: Session.ID
   readonly id?: SessionMessage.ID | undefined
@@ -215,6 +228,7 @@ export type SessionPromptInput = {
   readonly files?: ReadonlyArray<PromptInput.FileAttachment> | undefined
   readonly agents?: ReadonlyArray<AgentAttachment> | undefined
   readonly skills?: ReadonlyArray<PromptInput.SkillAttachment> | undefined
+  readonly expectedExecution?: SessionInbox.ActiveExecution | undefined
   readonly metadata?: { readonly [x: string]: unknown } | undefined
   readonly delivery?: SessionInbox.Delivery | undefined
   readonly resume?: boolean | undefined
@@ -420,6 +434,7 @@ export interface SessionApi<E = never> {
   readonly switchModel: SessionSwitchModelOperation<E>
   readonly update: SessionUpdateOperation<E>
   readonly move: SessionMoveOperation<E>
+  readonly steeringState: SessionSteeringStateOperation<E>
   readonly prompt: SessionPromptOperation<E>
   readonly command: SessionCommandOperation<E>
   readonly synthetic: SessionSyntheticOperation<E>

@@ -37,6 +37,8 @@ import type {
   SessionUpdateOutput,
   SessionMoveInput,
   SessionMoveOutput,
+  SessionSteeringStateInput,
+  SessionSteeringStateOutput,
   SessionPromptInput,
   SessionPromptOutput,
   SessionCommandInput,
@@ -671,7 +673,7 @@ export function make(options: ClientOptions) {
             method: "DELETE",
             path: `/api/session/${encodeURIComponent(input.sessionID)}`,
             successStatus: 204,
-            declaredStatuses: [400, 401, 404],
+            declaredStatuses: [400, 401, 404, 409],
             empty: true,
           },
           requestOptions,
@@ -741,6 +743,18 @@ export function make(options: ClientOptions) {
           },
           requestOptions,
         ),
+      steeringState: (input: SessionSteeringStateInput, requestOptions?: RequestOptions) =>
+        request<SessionSteeringStateOutput>(
+          {
+            method: "GET",
+            path: `/api/session/${encodeURIComponent(input.sessionID)}/steering`,
+            query: { messageID: input["messageID"] },
+            successStatus: 200,
+            declaredStatuses: [400, 401, 404],
+            empty: false,
+          },
+          requestOptions,
+        ),
       prompt: (input: SessionPromptInput, requestOptions?: RequestOptions) =>
         request<{ readonly data: SessionPromptOutput }>(
           {
@@ -752,6 +766,7 @@ export function make(options: ClientOptions) {
               files: input["files"],
               agents: input["agents"],
               skills: input["skills"],
+              expectedExecution: input["expectedExecution"],
               metadata: input["metadata"],
               delivery: input["delivery"],
               resume: input["resume"],
@@ -2439,7 +2454,7 @@ export function make(options: ClientOptions) {
             path: `/api/shell/${encodeURIComponent(input.id)}`,
             query: { location: input["location"] },
             successStatus: 204,
-            declaredStatuses: [400, 401, 404],
+            declaredStatuses: [400, 401, 404, 409],
             empty: true,
           },
           requestOptions,

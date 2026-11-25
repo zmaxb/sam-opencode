@@ -43,6 +43,8 @@ import type {
   SessionUpdateOutput,
   SessionMoveInput,
   SessionMoveOutput,
+  SessionSteeringStateInput,
+  SessionSteeringStateOutput,
   SessionPromptInput,
   SessionPromptOutput,
   SessionCommandInput,
@@ -527,6 +529,14 @@ const EndpointSessionMove = (raw: RawClient["server.session"]) => (input: Sessio
     }).pipe(Effect.mapError(mapClientError)),
   )
 
+const EndpointSessionSteeringState = (raw: RawClient["server.session"]) => (input: SessionSteeringStateInput) =>
+  preserveEffect<SessionSteeringStateOutput>()(
+    raw["session.steeringState"]({
+      params: { sessionID: input["sessionID"] },
+      query: { messageID: input["messageID"] },
+    }).pipe(Effect.mapError(mapClientError)),
+  )
+
 const EndpointSessionPrompt = (raw: RawClient["server.session"]) => (input: SessionPromptInput) =>
   preserveEffect<SessionPromptOutput>()(
     raw["session.prompt"]({
@@ -537,6 +547,7 @@ const EndpointSessionPrompt = (raw: RawClient["server.session"]) => (input: Sess
         files: input["files"],
         agents: input["agents"],
         skills: input["skills"],
+        expectedExecution: input["expectedExecution"],
         metadata: input["metadata"],
         delivery: input["delivery"],
         resume: input["resume"],
@@ -759,6 +770,7 @@ const adaptGroupSession = (raw: RawClient["server.session"]) => ({
   switchModel: EndpointSessionSwitchModel(raw),
   update: EndpointSessionUpdate(raw),
   move: EndpointSessionMove(raw),
+  steeringState: EndpointSessionSteeringState(raw),
   prompt: EndpointSessionPrompt(raw),
   command: EndpointSessionCommand(raw),
   synthetic: EndpointSessionSynthetic(raw),

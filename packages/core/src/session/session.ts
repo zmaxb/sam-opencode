@@ -170,12 +170,99 @@ export const make = Effect.fn("Session.make")(function* () {
     (sessionID: SessionSchema.ID, inboxID: SessionMessage.ID) => mutatePending(sessionID, inboxID, admission.queue),
     Effect.uninterruptible,
   )
+  const steeringState = Effect.fn("Session.steeringState")(function* (
+    sessionID: SessionSchema.ID,
+    messageID?: SessionMessage.ID,
+  ) {
+    yield* get(sessionID)
+    const stored = messageID && (yield* SessionInbox.steeringReceipt(database.db, sessionID, messageID))
+    return {
+      capability: "run-bound-steering/v1" as const,
+      execution: execution.steeringOwner?.(sessionID),
+      receipt: stored ? stored.receipt : undefined,
+    }
+  })
+
   const prompt = Effect.fn("Session.prompt")((sessionID: SessionSchema.ID, input: PromptRequest) =>
     Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         const session = yield* get(sessionID)
         const messageID = input.id ?? SessionMessage.ID.create()
+        const prepare = () =>
+          restore(SessionPrompt.prepare({ session, messageID, input })).pipe(
+            instances.provide(session),
+            Effect.provideService(Database.Service, database),
+            Effect.provideService(FSUtil.Service, fs),
+          )
         const admitted = yield* Effect.gen(function* () {
+          if (input.expectedExecution) {
+            const expected = input.expectedExecution
+            const conflict = new SessionInbox.LifecycleConflict({ id: messageID })
+            if (
+              !input.id ||
+              session.parentID ||
+              input.delivery === "queue" ||
+              input.files?.length ||
+              input.agents?.length ||
+              input.skills?.length
+            )
+              return yield* conflict
+            const digest = SessionInbox.textDigest(input.text)
+            const replay = Effect.gen(function* () {
+              const known = yield* SessionInbox.steeringReceipt(database.db, sessionID, messageID)
+              if (!known) return undefined
+              const saved = known.receipt
+              if (
+                saved.digest !== digest ||
+                saved.execution.rootMessageID !== expected.rootMessageID ||
+                saved.execution.ownerToken !== expected.ownerToken
+              )
+                return yield* conflict
+              return known.item
+            })
+            const saved = yield* replay
+            if (saved) return saved
+            const item = yield* prepare()
+            if (
+              item.delivery !== "steer" ||
+              item.payload.text !== input.text ||
+              item.payload.files?.length ||
+              item.payload.agents?.length ||
+              item.payload.skills?.length
+            )
+              return yield* conflict
+            return yield* SessionInbox.serialized(
+              sessionID,
+              Effect.gen(function* () {
+                const duplicate = yield* replay
+                if (duplicate) return duplicate
+                const current = yield* store.get(sessionID)
+                const owner = execution.steeringOwner?.(sessionID)
+                if (
+                  !current ||
+                  current.revert ||
+                  owner?.ownerToken !== expected.ownerToken ||
+                  owner.rootMessageID !== expected.rootMessageID
+                )
+                  return yield* conflict
+                return yield* admission.admit({
+                  id: messageID,
+                  sessionID,
+                  bound: true,
+                  item: {
+                    ...item,
+                    payload: {
+                      ...item.payload,
+                      metadata: {
+                        ...item.payload.metadata,
+                        [SessionInbox.steeringKey]: { sessionID, messageID, execution: owner, digest },
+                      },
+                    },
+                  },
+                })
+              }),
+            )
+          }
           const existing = yield* admission.reconcile({
             id: messageID,
             sessionID: session.id,
@@ -186,13 +273,15 @@ export const make = Effect.fn("Session.make")(function* () {
           // Preparation, the staged revert commit and admission share one acquisition of the session's location
           // services, so projections see its config whoever called prompt.
           return yield* Effect.gen(function* () {
-            const item = yield* restore(SessionPrompt.prepare({ session, messageID, input }))
+            const item = yield* SessionPrompt.prepare({ session, messageID, input }).pipe(restore)
+            const metadata = item.payload.metadata && { ...item.payload.metadata }
+            if (metadata) delete metadata[SessionInbox.steeringKey]
             // Commit a staged revert only after preparation succeeds, before admitting new work.
             if (session.revert) yield* SessionRevert.commit(bus, session)
             return yield* admission.admit({
               id: messageID,
               sessionID: session.id,
-              item,
+              item: { ...item, payload: { ...item.payload, metadata } },
             })
           }).pipe(
             instances.provide(session),
@@ -202,7 +291,7 @@ export const make = Effect.fn("Session.make")(function* () {
         }).pipe(
           Effect.catchTag("SessionInbox.LifecycleConflict", () => new PromptConflictError({ sessionID, messageID })),
         )
-        if (input.resume !== false) yield* execution.wake(sessionID)
+        if (!input.expectedExecution && input.resume !== false) yield* execution.wake(sessionID)
         return admitted
       }),
     ),
@@ -392,6 +481,7 @@ export const make = Effect.fn("Session.make")(function* () {
     switchModel,
     inbox,
     prompt,
+    steeringState,
     synthetic,
     shell,
     skill,
@@ -451,6 +541,7 @@ export const make = Effect.fn("Session.make")(function* () {
       switchModel,
       inbox,
       prompt,
+      steeringState: operations.steeringState.bind(undefined, sessionID),
       synthetic,
       shell,
       skill,

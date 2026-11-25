@@ -11,6 +11,20 @@ import { SessionMessage } from "./session-message.js"
 export const Delivery = Schema.Literals(["steer", "queue"]).annotate({ identifier: "Session.Inbox.Delivery" })
 export type Delivery = typeof Delivery.Type
 
+export const ActiveExecution = Schema.Struct({
+  rootMessageID: SessionMessage.ID,
+  ownerToken: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+}).annotate({ identifier: "Session.ActiveExecution" })
+export type ActiveExecution = typeof ActiveExecution.Type
+
+export const SteeringReceipt = Schema.Struct({
+  sessionID: SessionID,
+  messageID: SessionMessage.ID,
+  execution: ActiveExecution,
+  digest: Schema.String,
+}).annotate({ identifier: "Session.SteeringReceipt" })
+export type SteeringReceipt = typeof SteeringReceipt.Type
+
 export interface UserPayload extends Schema.Schema.Type<typeof UserPayload> {}
 export const UserPayload = Schema.Struct({
   ...Prompt.fields,

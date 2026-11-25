@@ -96,6 +96,7 @@ const decodeSerializedEvent = (event: SerializedEvent): Event.Payload => {
 }
 
 export const versionedType = Event.versionedType
+export const retainedType = (type: string) => "local-retained:" + type
 export const durable = Event.durable
 export const ephemeral = Event.ephemeral
 
@@ -104,6 +105,8 @@ export interface PublishOptions {
   readonly metadata?: Record<string, unknown>
   readonly location?: Location.Ref
   readonly global?: boolean
+  /** Retain an addressable durable event even when aggregate replay is disabled. */
+  readonly retain?: boolean
   /** Local operational projection committed atomically with a new durable event. Not replayed or serialized. */
   readonly commit?: (seq: number) => Effect.Effect<void>
 }
@@ -297,6 +300,7 @@ export function configured(options?: Options) {
             readonly strictOwner?: boolean
           },
           commit?: (seq: number) => Effect.Effect<void>,
+          retain = false,
         ) {
           return Effect.gen(function* () {
             const durable = definition.durable
@@ -378,7 +382,7 @@ export function configured(options?: Options) {
                             }),
                           )
                         }
-                        if (persist) {
+                        if (persist || retain) {
                           const stored = yield* db
                             .select({ aggregateID: EventTable.aggregate_id, seq: EventTable.seq })
                             .from(EventTable)
@@ -414,7 +418,7 @@ export function configured(options?: Options) {
                           })
                           .run()
                           .pipe(Effect.orDie)
-                        if (persist)
+                        if (persist || retain)
                           yield* db
                             .insert(EventTable)
                             .values([
@@ -423,7 +427,10 @@ export function configured(options?: Options) {
                                 aggregate_id: aggregateID,
                                 seq,
                                 created: event.created ?? 0,
-                                type: versionedType(definition.type, durable.version),
+                                // A selectively retained row is addressable, but is not a replay record.
+                                type: persist
+                                  ? versionedType(definition.type, durable.version)
+                                  : retainedType(versionedType(definition.type, durable.version)),
                                 data: encode(),
                               },
                             ])
@@ -451,25 +458,36 @@ export function configured(options?: Options) {
         function publishEvent<D extends Event.Definition>(
           definition: D,
           event: Event.Payload<D>,
-          commit?: PublishOptions["commit"],
+          options?: PublishOptions,
         ) {
           return Effect.gen(function* () {
-            if (!definition.durable && commit)
+            const commit = options?.commit
+            if (!definition.durable && (commit || options?.retain))
               return yield* Effect.die(
                 new InvalidDurableEventError({
                   type: event.type,
-                  message: "Local commit hooks require a durable event",
+                  message: "Local retention and commit hooks require a durable event",
                 }),
               )
             if (definition.durable) {
               const aggregateID = (event.data as Record<string, unknown>)[definition.durable.aggregate]
               if (typeof aggregateID !== "string")
-                return yield* commitDurableEvent(definition, event as Event.Payload, undefined, commit).pipe(
-                  Effect.as(event),
-                )
+                return yield* commitDurableEvent(
+                  definition,
+                  event as Event.Payload,
+                  undefined,
+                  commit,
+                  options?.retain,
+                ).pipe(Effect.as(event))
               return yield* durableLocks.withLock(aggregateID)(
                 Effect.gen(function* () {
-                  const committed = yield* commitDurableEvent(definition, event as Event.Payload, undefined, commit)
+                  const committed = yield* commitDurableEvent(
+                    definition,
+                    event as Event.Payload,
+                    undefined,
+                    commit,
+                    options?.retain,
+                  )
                   if (!committed) return event
                   event = committed.event as Event.Payload<D>
                   yield* notify(event as Event.Payload, true)
@@ -529,7 +547,7 @@ export function configured(options?: Options) {
         function publish<D extends Event.Definition>(definition: D, data: Event.Data<D>, options?: PublishOptions) {
           return Effect.gen(function* () {
             const event = (yield* makePayload(definition, data, options)) as Event.Payload<D>
-            return yield* publishEvent(definition, event, options?.commit)
+            return yield* publishEvent(definition, event, options)
           })
         }
 

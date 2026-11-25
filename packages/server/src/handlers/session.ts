@@ -308,6 +308,11 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
           return HttpApiSchema.NoContent.make()
         }),
       )
+      .handle("session.steeringState", (ctx) =>
+        session
+          .steeringState({ sessionID: ctx.params.sessionID, messageID: ctx.query.messageID })
+          .pipe(Effect.catchTag("Session.NotFoundError", missingSession)),
+      )
       .handle(
         "session.prompt",
         Effect.fn(function* (ctx) {
@@ -321,6 +326,7 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                 agents: ctx.payload.agents,
                 skills: ctx.payload.skills,
                 metadata: ctx.payload.metadata,
+                expectedExecution: ctx.payload.expectedExecution,
                 delivery: ctx.payload.delivery,
                 resume: ctx.payload.resume,
               })
@@ -329,7 +335,9 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                 Effect.catchTag("Session.PromptConflictError", (error) =>
                   Effect.fail(
                     new ConflictError({
-                      message: `Prompt message ID conflicts with an existing durable record: ${error.messageID}`,
+                      message: ctx.payload.expectedExecution
+                        ? "Steering input or expected active execution conflicts"
+                        : `Prompt message ID conflicts with an existing durable record: ${error.messageID}`,
                       resource: error.messageID,
                     }),
                   ),

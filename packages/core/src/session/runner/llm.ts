@@ -98,6 +98,7 @@ const layer = Layer.effect(
                     db,
                     sessionID,
                     entering || !continuing ? "input" : "steer",
+                    continuing ? input.steering?.owner() : undefined,
                   )
                   if (next?.type === "compaction")
                     yield* bus.publishAll([
@@ -196,6 +197,10 @@ const layer = Layer.effect(
                     bus,
                     sessionID,
                     entering && !continuing ? promotable : "steer",
+                    input.steering && {
+                      owner: () => (continuing ? input.steering?.owner() : undefined),
+                      root: !continuing ? input.steering.open : undefined,
+                    },
                   )
                   // A control admitted during context preparation owns this boundary.
                   if (promoted === undefined) return undefined
@@ -216,7 +221,7 @@ const layer = Layer.effect(
       while (true) {
         const next = yield* advanceToStep()
         if (next._tag !== "Ready") return next
-        continuing = yield* runStep(next.context, step, input.interruption)
+        continuing = yield* runStep(next.context, step, input.interruption, input.steering?.close)
         stepped = true
         step++
         force = false
@@ -238,6 +243,7 @@ const layer = Layer.effect(
       first: SessionContext.Loaded,
       step: number,
       interruption: DrainInput["interruption"],
+      closeRoot: Effect.Effect<void> | undefined,
     ) {
       const sessionID = first.session.id
       let assistantMessageID = SessionMessage.ID.create()
@@ -328,10 +334,12 @@ const layer = Layer.effect(
         const completed = yield* SessionStep.Outcome.$match(outcome, {
           Completed: Effect.fnUntraced(function* (outcome) {
             // The Session is about to go idle, which leaves the background summary time to finish.
-            if (!outcome.needsContinuation)
+            if (!outcome.needsContinuation) {
+              if (closeRoot) yield* closeRoot
               yield* compaction.precompute(
                 store.context(sessionID).pipe(Effect.map((messages) => ({ ...loaded, messages }))),
               )
+            }
             return outcome.needsContinuation
           }),
           Retry: Effect.fnUntraced(function* (outcome) {

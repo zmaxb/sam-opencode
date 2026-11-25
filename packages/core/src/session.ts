@@ -212,6 +212,10 @@ export interface Interface {
     permissions: Permission.Ruleset
   }) => Effect.Effect<void, NotFoundError>
   readonly move: SessionMove.Interface["move"]
+  readonly steeringState: (input: {
+    sessionID: SessionSchema.ID
+    messageID?: SessionMessage.ID
+  }) => ReturnType<Session.Handle["steeringState"]>
   readonly prompt: (
     input: Parameters<Session.Handle["prompt"]>[0] & { sessionID: SessionSchema.ID },
   ) => ReturnType<Session.Handle["prompt"]>
@@ -497,6 +501,7 @@ const layer = Layer.effect(
               Bus.isSynced(item) || isDurableSessionEvent(item),
           ),
         ),
+      steeringState: (input) => sessions.forSession(input.sessionID).steeringState(input.messageID),
       prompt: (input) => sessions.forSession(input.sessionID).prompt(input),
       generate: Effect.fn("Session.generate")(function* (input) {
         const session = yield* result.get(input.sessionID)

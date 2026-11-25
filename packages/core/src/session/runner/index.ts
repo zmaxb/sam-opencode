@@ -1,6 +1,8 @@
 export * as SessionRunner from "./index.js"
 
 import type { FileSystem } from "../../filesystem.js"
+import type { ActiveExecution } from "@opencode/schema/session-inbox"
+import type { SessionMessage } from "@opencode/schema/session-message"
 import type { AIError } from "@opencode/ai/effect"
 import { Context, Data, Effect } from "effect"
 import { SessionSchema } from "../schema.js"
@@ -40,6 +42,11 @@ export interface Interface {
     readonly stepped?: boolean
     /** Why the execution is being interrupted, once it is: `"user"` when someone stopped it. */
     readonly interruption?: () => "user" | "shutdown" | undefined
+    readonly steering?: {
+      readonly owner: () => ActiveExecution | undefined
+      readonly open: (id: SessionMessage.ID) => void
+      readonly close: Effect.Effect<void>
+    }
   }) => Effect.Effect<DrainResult, RunError>
 }
 

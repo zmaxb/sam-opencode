@@ -339,11 +339,29 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
       ),
     )
     .add(
+      HttpApiEndpoint.get("session.steeringState", "/api/session/:sessionID/steering", {
+        params: { sessionID: Session.ID },
+        query: { messageID: SessionMessage.ID.pipe(Schema.optional) },
+        success: Schema.Struct({
+          capability: Schema.Literal("run-bound-steering/v1"),
+          execution: SessionInbox.ActiveExecution.pipe(Schema.optional),
+          receipt: SessionInbox.SteeringReceipt.pipe(Schema.optional),
+        }),
+        error: SessionNotFoundError,
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "session.steeringState",
+          summary: "Read active execution and exact steering receipt",
+        }),
+      ),
+    )
+    .add(
       HttpApiEndpoint.post("session.prompt", "/api/session/:sessionID/prompt", {
         params: { sessionID: Session.ID },
         payload: Schema.Struct({
           id: SessionMessage.ID.pipe(Schema.optional),
           ...PromptInput.Prompt.fields,
+          expectedExecution: SessionInbox.ActiveExecution.pipe(Schema.optional),
           metadata: SessionInbox.UserPayload.fields.metadata,
           delivery: SessionInbox.Delivery.pipe(Schema.optional),
           resume: Schema.Boolean.pipe(Schema.optional),

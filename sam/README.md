@@ -45,4 +45,17 @@ The archive uses the existing installation layout. `tools/opencode/install.sh --
 
 Select an exact upstream release commit and compare the affected native areas. Replay the small native commits in manifest order onto the selected upstream source without rewriting released tags. Identify equivalent upstream changes and retire them after qualification. Check conflicts and new lifecycle behavior, build with the pinned toolchain, run native fixtures and the SAM integration checks, and issue the next distribution release with a new manifest and changelog entry. Keep runtime compatibility controlled by the negotiated wire and capabilities.
 
-Stateless Completion is included in the first distribution because it is part of the adopted production baseline. Its managed Processor path remains opt-in through existing Plugin target configuration. This distribution does not change Steering behavior.
+Stateless Completion is included in the first distribution because it is part of the adopted production baseline. Its managed Processor path remains opt-in through existing Plugin target configuration. The published 0.1.0 release keeps the existing Steering behavior.
+
+## Native run-bound steering
+
+A native client can read `GET /api/session/{sessionID}/steering` to discover `run-bound-steering/v1` and the current ordinary root execution, when available. Submit a text-only `POST /api/session/{sessionID}/prompt` with an explicit message `id`, `delivery: "steer"` and `expectedExecution` containing the returned `rootMessageID` and opaque `ownerToken`. Keep both values together. A stale binding returns HTTP 409 unless the exact request was already accepted.
+
+Read `GET /api/session/{sessionID}/steering?messageID={id}` to recover the admission receipt. It includes the Session ID, steering message ID, original execution identity and SHA-256 of the accepted UTF-8 text. The receipt confirms admission. Consumption happens on a subsequent step of the same root if it continues. An exact repeat reads the original admission without adding work. Completion and Stop expire undelivered inputs. Receipts survive restart for the lifetime of the Session. The managed server expires stranded inputs during restart recovery. A plain server expires them when the affected Session next starts, before it consumes input. Ordinary unbound prompts use the existing API behavior.
+
+This native opt-in capability leaves the production SAM Plugin, Wire v3 and SAM Runtime capability advertisement unchanged. Qualify it against an isolated synthetic provider.
+
+```sh
+python3 sam/qualification/steering/qualify.py "$SAM_TEST_OPENCODE_NATIVE_BINARY"
+python3 sam/qualification/steering/qualify.py "$SAM_TEST_OPENCODE_NATIVE_BINARY" --managed
+```

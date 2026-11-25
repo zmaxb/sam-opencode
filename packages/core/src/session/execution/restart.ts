@@ -13,6 +13,7 @@ import { Shell } from "../../shell.js"
 import { ShellTool } from "../../tool/plugin/shell.js"
 import { SessionEvent } from "../event.js"
 import { SessionExecution } from "../execution.js"
+import { SessionInbox } from "../inbox.js"
 import { SessionHistory } from "../history.js"
 import { SessionSchema } from "../schema.js"
 import { SessionStore } from "../store.js"
@@ -378,6 +379,13 @@ export const layer = (options?: Options) =>
       return Service.of({
         resumeSuspendedSessions: Effect.gen(function* () {
           const active = yield* execution.active
+          yield* SessionInbox.expireSteering(
+            db,
+            bus,
+            undefined,
+            undefined,
+            execution.steeringOwner ?? (() => undefined),
+          )
           const pending = yield* jobs.pendingBackground
           const children = new Set(
             pending.flatMap((background) =>

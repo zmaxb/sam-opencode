@@ -1,0 +1,6 @@
+{
+  "name": "opencode-bound-steering-fixture",
+  "private": true,
+  "type": "module",
+  "exports": { "./server": "./index.mjs" }
+}

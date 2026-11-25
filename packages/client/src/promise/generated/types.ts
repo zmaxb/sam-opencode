@@ -417,6 +417,8 @@ export type SessionForkBoundary =
   | { type: "before"; messageID: SessionMessageID }
   | { type: "through"; messageID: SessionMessageID }
 
+export type SessionActiveExecution = { rootMessageID: SessionMessageID; ownerToken: string }
+
 export type SessionMessageAgentSelected = {
   id: SessionMessageID
   metadata?: { [x: string]: JsonValue }
@@ -1099,6 +1101,13 @@ export type ModelVariant = {
 }
 
 export type PermissionRuleset = Array<PermissionRule>
+
+export type SessionSteeringReceipt = {
+  sessionID: SessionID
+  messageID: SessionMessageID
+  execution: SessionActiveExecution
+  digest: string
+}
 
 export type UsageLimitsBudget = {
   id: string
@@ -3048,6 +3057,14 @@ export type SessionNotFoundError = {
 export const isSessionNotFoundError = (value: unknown): value is SessionNotFoundError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "SessionNotFoundError"
 
+export type ConflictError = {
+  readonly _tag: "ConflictError"
+  readonly message: string
+  readonly resource?: string | undefined
+}
+export const isConflictError = (value: unknown): value is ConflictError =>
+  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "ConflictError"
+
 export type MessageNotFoundError = {
   readonly _tag: "MessageNotFoundError"
   readonly sessionID: string
@@ -3056,14 +3073,6 @@ export type MessageNotFoundError = {
 }
 export const isMessageNotFoundError = (value: unknown): value is MessageNotFoundError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "MessageNotFoundError"
-
-export type ConflictError = {
-  readonly _tag: "ConflictError"
-  readonly message: string
-  readonly resource?: string | undefined
-}
-export const isConflictError = (value: unknown): value is ConflictError =>
-  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "ConflictError"
 
 export type CommandNotFoundError = {
   readonly _tag: "CommandNotFoundError"
@@ -3432,6 +3441,14 @@ export type SessionMoveInput = {
 
 export type SessionMoveOutput = void
 
+export type SessionSteeringStateInput = { readonly sessionID: string; readonly messageID?: string | undefined }
+
+export type SessionSteeringStateOutput = {
+  capability: "run-bound-steering/v1"
+  execution?: SessionActiveExecution | undefined
+  receipt?: SessionSteeringReceipt | undefined
+}
+
 export type SessionPromptInput = {
   readonly sessionID: string
   readonly id?: string | null | undefined
@@ -3457,6 +3474,7 @@ export type SessionPromptInput = {
         readonly mention?: { readonly start: number; readonly end: number; readonly text: string }
       }>
     | undefined
+  readonly expectedExecution?: { readonly rootMessageID: string; readonly ownerToken: string } | null | undefined
   readonly metadata?: { readonly [x: string]: JsonValue } | undefined
   readonly delivery?: ("steer" | "queue") | null | undefined
   readonly resume?: boolean | null | undefined

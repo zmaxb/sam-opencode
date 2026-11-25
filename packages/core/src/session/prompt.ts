@@ -29,6 +29,7 @@ export type Input = {
   skills?: PromptInput.Prompt["skills"]
   metadata?: Record<string, unknown>
   delivery?: SessionInbox.Delivery
+  expectedExecution?: SessionInbox.ActiveExecution
 }
 
 export const prepare = Effect.fn("SessionPrompt.prepare")(function* (request: {
@@ -50,6 +51,7 @@ export const prepare = Effect.fn("SessionPrompt.prepare")(function* (request: {
     }),
     metadata: structuredClone(request.input.metadata),
     delivery: request.input.delivery ?? "steer",
+    ...(request.input.expectedExecution ? { expectedExecution: structuredClone(request.input.expectedExecution) } : {}),
   })
   const input = event.prompt
   const files = input.files
