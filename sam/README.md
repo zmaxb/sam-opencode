@@ -51,6 +51,10 @@ Enable resource observation by setting `SAM_INFERENCE_RESOURCE_KEY` and `SAM_INF
 
 The Plugin advertises resource observation on the existing authenticated Wire v3 RPC. The gateway serves the versioned snapshot from loopback `GET /resources/v1` with the observation credential. The snapshot separates reservation, backend-observed occupancy, queue entries, unsettled attempts and the latest release evidence. A single slot is confirmed by a valid single-slot reply from backend `/slots`. Shared Admission waits for a fresh idle observation before the next dispatch after startup or after a transmitted request. An unavailable or incompatible probe keeps dispatch gated. Diagnose the backend and its supported slot API through the operator procedures.
 
+To qualify native control against Shared Admission without inference, run
+`python3 sam/qualification/steering/shared_admission.py "$SAM_TEST_OPENCODE_NATIVE_BINARY"`.
+The fixture uses a local synthetic provider, a disposable native workspace and a single slot.
+
 ## Upstream updates
 
 Select an exact upstream release commit and compare the affected native areas. Replay the small native commits in manifest order onto the selected upstream source without rewriting released tags. Identify equivalent upstream changes and retire them after qualification. Check conflicts and new lifecycle behavior, build with the pinned toolchain, run native fixtures and the SAM integration checks, and issue the next distribution release with a new manifest and changelog entry. Keep runtime compatibility controlled by the negotiated wire and capabilities.
