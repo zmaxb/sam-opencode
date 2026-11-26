@@ -7,6 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 
 const secret = 'fixture-gateway-key-01234567890123456789';
+const observationToken = 'fixture-observation-key-01234567890123456789';
 const backend = 'fixture-backend-key-01234567890123456789';
 
 test('the HTTP ingress orders both roles and holds the slot across disconnect and restart', { timeout: 20000 }, async () => {
@@ -29,8 +30,13 @@ test('the HTTP ingress orders both roles and holds the slot across disconnect an
         const wait = new Promise(resolve => { finish = resolve; });
         active = finish;
         order.push(input.id);
+        if (input.id === 'ambiguous-status') {
+            response.writeHead(502, { 'content-type': 'application/json' });
+            response.end(JSON.stringify({ error: 'fixture gateway failure' }));
+        }
         await wait;
         active = null;
+        if (input.id === 'ambiguous-status') return;
         response.writeHead(200, { 'content-type': 'application/json' });
         response.end(JSON.stringify(input));
     });
@@ -46,6 +52,8 @@ test('the HTTP ingress orders both roles and holds the slot across disconnect an
     const base = 'http://127.0.0.1:' + port;
     const auth = { authorization: 'Bearer ' + secret };
     let ingress;
+    const observation = { authorization: 'Bearer ' + observationToken };
+    const snapshot = async () => (await fetch(base + '/resources/v1', { headers: observation })).json();
     const health = async () => (await fetch(base + '/health', { headers: auth })).json();
     async function until(read, match) {
         for (let count = 0; count < 200; count++) {
@@ -63,7 +71,8 @@ test('the HTTP ingress orders both roles and holds the slot across disconnect an
         ingress = spawn(process.execPath, ['tools/opencode/admission/server.mjs'], {
             stdio: 'ignore', env: {
                 ...process.env, SAM_INFERENCE_UPSTREAM: 'http://127.0.0.1:' + upstream.address().port,
-                SAM_INFERENCE_PORT: String(port), SAM_INFERENCE_TOKEN: secret, SAM_INFERENCE_UPSTREAM_TOKEN: backend, SAM_INFERENCE_QUEUE_TIMEOUT_MS: "900"
+                SAM_INFERENCE_PORT: String(port), SAM_INFERENCE_TOKEN: secret, SAM_INFERENCE_UPSTREAM_TOKEN: backend, SAM_INFERENCE_QUEUE_TIMEOUT_MS: "900",
+                SAM_INFERENCE_RESOURCE_KEY: "fixture-shared", SAM_INFERENCE_OBSERVATION_TOKEN: observationToken
             }
         });
         await until(health, value => value.capacity === 1);
@@ -74,10 +83,17 @@ test('the HTTP ingress orders both roles and holds the slot across disconnect an
         await once(ingress, 'exit');
     }
     const post = (id, role, signal) => fetch(base + '/v1/chat/completions', {
-        method: 'POST', headers: { ...auth, 'x-sam-inference-role': role }, body: JSON.stringify({ id }), signal
+        method: 'POST', headers: { ...auth, 'x-sam-inference-role': role, 'x-sam-correlation-id': id }, body: JSON.stringify({ id }), signal
     }).then(response => response.json());
     try {
         await start();
+        const initial = await snapshot();
+        assert.equal(initial.contract, 'sam.model-resource.snapshot/v1');
+        assert.equal(initial.resourceKey, 'fixture-shared');
+        assert.equal(initial.appliedMax, 1);
+        assert.equal(initial.availableForAdmission, null, 'startup gate is not a free slot');
+        assert.equal((await fetch(base + '/resources/v1', { headers: auth })).status, 401);
+        assert.equal((await fetch(base + '/v1/chat/completions', { method: 'POST', headers: observation })).status, 401);
         const disconnected = new AbortController();
         const first = post('P1', 'processor', disconnected.signal);
         await until(() => order.length, value => value === 1);
@@ -85,9 +101,26 @@ test('the HTTP ingress orders both roles and holds the slot across disconnect an
         await until(health, value => value.waitingProcessor === 1);
         const agent = post('A1', 'agent');
         await until(health, value => value.waitingAgent === 1);
+        const busy = await snapshot();
+        assert.equal(busy.physicalBusy, 1);
+        assert.equal(busy.availableForAdmission, 0);
+        assert.equal(busy.active[0].originRef, 'P1');
+        assert.equal(busy.active[0].phase, 'Computing');
+        assert.deepEqual(busy.waiting.map(row => row.originRef), ['A1', 'P2']);
+        assert.equal(new Set(busy.active.concat(busy.waiting).map(row => row.attemptId)).size, 3);
+        const withdrew = new AbortController();
+        const waiting = post('withdraw-before-dispatch', 'processor', withdrew.signal);
+        const waitingRejected = assert.rejects(waiting, { name: 'AbortError' });
+        await until(health, value => value.waitingProcessor === 2);
+        withdrew.abort();
+        await waitingRejected;
+        await until(health, value => value.waitingProcessor === 1);
         disconnected.abort();
         await assert.rejects(first, { name: 'AbortError' });
         assert.deepEqual(order, ['P1']);
+        const blocked = await until(snapshot, value => value.blocked && value.unsettled?.phase === 'Unknown');
+        assert.equal(blocked.availableForAdmission, null);
+        assert.equal(blocked.unsettled.attemptId, busy.active[0].attemptId);
         active();
         await until(() => order.length, value => value === 2);
         assert.deepEqual(order, ['P1', 'A1']);
@@ -98,6 +131,9 @@ test('the HTTP ingress orders both roles and holds the slot across disconnect an
         await stop();
         await abandoned;
         await start();
+        const afterRestart = await snapshot();
+        assert.notEqual(afterRestart.ownerEpoch, busy.ownerEpoch);
+        assert.equal(afterRestart.availableForAdmission, null);
         const recovery = post('A2', 'agent');
         await until(health, value => value.active && value.idleProofRequired);
         assert.deepEqual(order, ['P1', 'A1', 'P2']);
@@ -116,6 +152,21 @@ test('the HTTP ingress orders both roles and holds the slot across disconnect an
         await until(() => order.length, value => value === 5);
         active();
         assert.equal((await restored).id, 'after-restart');
+        await until(health, value => !value.active && !value.idleProofRequired);
+        assert.equal((await post('ambiguous-status', 'agent')).error, 'fixture gateway failure');
+        const held = await until(snapshot, value => value.blocked && value.unsettled?.originRef === 'ambiguous-status');
+        const following = post('following', 'processor');
+        await until(health, value => value.waitingProcessor === 1);
+        assert.equal(held.availableForAdmission, null);
+        assert.equal(order.at(-1), 'ambiguous-status');
+        active();
+        await until(() => order.at(-1), value => value === 'following');
+        active();
+        assert.equal((await following).id, 'following');
+        const released = await until(snapshot, value => value.availableForAdmission === 1);
+        assert.equal(released.previousRelease.evidence, 'backend-idle');
+        assert.ok(released.sequence > afterRestart.sequence);
+        assert.ok(!order.includes('withdraw-before-dispatch'));
     } finally {
         active?.();
         await stop();

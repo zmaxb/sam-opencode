@@ -1,7 +1,7 @@
 // One scheduler is owned by the single ingress serving this physical resource.
 export function admission({ agentBurst = 3, maxWaiting = 32 } = {}) {
     const waiting = { agent: [], processor: [] };
-    let active = false;
+    let active = null;
     let servedAgents = 0;
 
     function pump() {
@@ -11,19 +11,19 @@ export function admission({ agentBurst = 3, maxWaiting = 32 } = {}) {
         const entry = waiting[role].shift();
         if (!entry) return;
         entry.cleanup();
-        active = true;
+        active = entry.metadata ?? {};
         servedAgents = role === 'agent' && processorWaiting ? servedAgents + 1 : 0;
         let released = false;
         entry.resolve(() => {
             if (released) return;
             released = true;
-            active = false;
+            active = null;
             pump();
         });
     }
 
     return {
-        acquire(role, signal) {
+        acquire(role, signal, metadata) {
             if (role !== 'agent' && role !== 'processor') throw new Error('invalid_inference_role');
             if (signal.aborted) return Promise.reject(signal.reason);
             if (waiting.agent.length + waiting.processor.length >= maxWaiting)
@@ -37,14 +37,18 @@ export function admission({ agentBurst = 3, maxWaiting = 32 } = {}) {
                     if (!waiting.processor.length) servedAgents = 0;
                     reject(signal.reason);
                 };
-                const entry = { resolve, cleanup: () => signal.removeEventListener('abort', withdraw) };
+                const entry = { resolve, metadata, cleanup: () => signal.removeEventListener('abort', withdraw) };
                 queue.push(entry);
                 signal.addEventListener('abort', withdraw, { once: true });
                 pump();
             });
         },
+        snapshot() {
+            return { active, waiting: [...waiting.agent, ...waiting.processor].map(entry => entry.metadata) };
+        },
+
         read() {
-            return { active, waitingAgent: waiting.agent.length, waitingProcessor: waiting.processor.length };
+            return { active: active !== null, waitingAgent: waiting.agent.length, waitingProcessor: waiting.processor.length };
         }
     };
 }

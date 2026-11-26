@@ -4,6 +4,7 @@ import { background } from './background.mjs';
 import { processor, processorContract } from './processor.mjs';
 
 const contract = 'sam.opencode-wire/v3';
+const resourceContract = 'sam.model-resource.snapshot/v1';
 const steeringContract = 'run-bound-steering/v1';
 const identityContract = 'sam.opencode-identity/v1';
 const steeringMessage = /^msg_steer_[0-9a-f]{32}$/;
@@ -161,6 +162,15 @@ export default {
         const identitySupported = ctx.experimental?.systemBudget === true;
         const completion = processor(ctx, epoch);
         const processorTargets = await completion.qualification();
+        const resource = ctx.options?.resourceObservation;
+        const resourceToken = process.env.SAM_INFERENCE_OBSERVATION_TOKEN;
+        const resourceTarget = resource && processorTargets.find(target => target.sharedAdmission &&
+            target.providerId === resource.providerId && target.modelId === resource.modelId);
+        const resourceAddress = resourceTarget ? new URL('/resources/v1', resourceTarget.endpoint) : null;
+        const observesResource = resourceAddress?.hostname === '127.0.0.1' && resourceAddress.protocol === 'http:' &&
+            typeof resource.resourceKey === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(resource.resourceKey) &&
+            typeof resourceToken === 'string' && resourceToken.length >= 32;
+
         const definitions = new Map();
         const catalogues = new Map();
         let reload = Promise.resolve();
@@ -460,12 +470,31 @@ export default {
 
         await ctx.rpc.register({
             id: 'sam-opencode-context',
-            methods: Object.fromEntries(['inspect', 'configure', 'continue', 'fence-report', 'release-report', 'admit-late-background', 'delete-detached-session', 'poll', 'settle', 'child-poll', 'child-settle', ...Object.keys(jobs.methods), ...Object.keys(completion.methods)].map(name =>
+            methods: Object.fromEntries(['inspect', 'resource-read', 'configure', 'continue', 'fence-report', 'release-report', 'admit-late-background', 'delete-detached-session', 'poll', 'settle', 'child-poll', 'child-settle', ...Object.keys(jobs.methods), ...Object.keys(completion.methods)].map(name =>
                 [name, { input: object, output: object }])),
             events: {}
         }, {
             ...jobs.methods,
             ...completion.methods,
+            async ['resource-read']({ resourceKey }) {
+                if (!observesResource || resourceKey !== resource.resourceKey) return { state: 'Unsupported' };
+                try {
+                    const response = await fetch(resourceAddress, {
+                        headers: { authorization: 'Bearer ' + resourceToken },
+                        redirect: 'error', signal: AbortSignal.timeout(1800)
+                    });
+                    if (!response.ok) {
+                        await response.body?.cancel();
+                        return { state: 'Unavailable' };
+                    }
+                    const snapshot = await response.json();
+                    return snapshot.contract === resourceContract && snapshot.resourceKey === resourceKey
+                        ? { ...snapshot, modelId: resourceTarget.modelId } : { state: 'Unavailable' };
+                } catch {
+                    return { state: 'Unavailable' };
+                }
+            },
+
             async inspect({ sessionId, inputId }) {
                 const input = inputId ?? runs.get(sessionId)?.expected.inputId;
                 const current = typeof sessionId === 'string' && typeof input === 'string'
@@ -473,6 +502,7 @@ export default {
                 const baseNativeTools = [...nativeTools.keys()].every(name => name === 'patch' || wrappedNativeTools.has(name));
                 return {
                     ...(processorTargets.length ? { processor: { contract: processorContract, targets: processorTargets } } : {}),
+                    ...(observesResource ? { resourceObservation: resourceContract } : {}),
                     contract, epoch, steering: steeringContract, zenContext: zenContextContract, modelRequests: structuredClone(modelRequests),
                     ...(identitySupported ? { identity: identityContract } : {}),
                     backgroundJobs: jobs.qualification,
@@ -1163,6 +1193,11 @@ export default {
             if (local) {
                 event.request.headers.set('x-sam-inference-role', 'agent');
                 event.request.headers.set('x-sam-correlation-id', event.sessionID);
+                event.request.headers.set('x-sam-resource-run-id', expected.inputId);
+                event.request.headers.delete('x-sam-resource-execution-id');
+                if (expected.child === undefined && expected.reportChildId === undefined &&
+                    expected.lateBackgroundNotificationId === undefined && /^msg_[a-f0-9]{32}$/.test(expected.inputId))
+                    event.request.headers.set('x-sam-resource-execution-id', expected.inputId.slice(4));
             }
             run.pending = true;
             try {
